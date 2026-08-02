@@ -1,0 +1,46 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Test and type-checker caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated datasets and their sibling runtime provenance.
+# The canonical directory name is configurable, so ignore the defaults used by
+# the CLI, the examples, and the validation scripts rather than every directory.
+output_eeg_dataset/
+output_quickstart/
+output_*/
+*.runtime.json
+*.h5
+*.npz
+*.mat
+
+# Results written by the validation scripts outside validation_results/
+inverse_recovery_metrics.csv
+
+# Keep the archived validation artifacts that ship with the release.
+!validation_results/**
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

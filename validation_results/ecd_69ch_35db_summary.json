@@ -1,0 +1,115 @@
+{
+  "eeg_normalization": "none",
+  "figure": "ecd_69ch_35db.png",
+  "figure_sha256": "78075bc5fde87a9093f0fa7d195e614ed0e902465335a156e5cd40555dcae9f3",
+  "goodness_of_fit_percent": {
+    "median": 99.99246391949083
+  },
+  "method": "MNE equivalent-current-dipole fit with independent Berg-Scherg multilayer-sphere forward",
+  "metrics_csv": "ecd_69ch_35db_per_sample.csv",
+  "metrics_csv_sha256": "939d53311fe487d5e9c769c3130b2f971e4103db22d540b529aeb5aab5e8fc61",
+  "moment_amplitude": {
+    "absolute_error_nAm": {
+      "maximum": 14.923207499016371,
+      "median": 0.23385697271474548,
+      "p90": 1.8360996094152389
+    },
+    "estimated_to_true_ratio": {
+      "median": 1.001114707079247
+    },
+    "relative_error": {
+      "maximum": 0.03248088593301517,
+      "median": 0.003198549820125452,
+      "p90": 0.009864079704718769
+    },
+    "units": "nA*m at fitted time sample"
+  },
+  "montage": "standard_1010_69.csv",
+  "n_test": 300,
+  "noise_model": "snr_target",
+  "orientation_error_deg": {
+    "maximum": 1.944907416847417,
+    "median": 0.2522477508724202,
+    "p90": 0.5987883249661882
+  },
+  "position_error_mm": {
+    "maximum": 2.405593142694042,
+    "median": 0.2669088199876497,
+    "p90": 0.8769885745446026
+  },
+  "reference_mode": "none",
+  "seed": 20260703,
+  "snr_degradation_sweep": [
+    {
+      "goodness_of_fit_median_percent": 94.96298063739988,
+      "n_test": 150,
+      "position_error_median_mm": 10.504152977854686,
+      "position_error_p90_mm": 26.93715390479906,
+      "snr_db": 5.0
+    },
+    {
+      "goodness_of_fit_median_percent": 98.21085982795304,
+      "n_test": 150,
+      "position_error_median_mm": 5.104311371758864,
+      "position_error_p90_mm": 14.277173697082041,
+      "snr_db": 10.0
+    },
+    {
+      "goodness_of_fit_median_percent": 99.38118092373082,
+      "n_test": 150,
+      "position_error_median_mm": 2.7924940335271806,
+      "position_error_p90_mm": 6.919183643960488,
+      "snr_db": 15.0
+    },
+    {
+      "goodness_of_fit_median_percent": 99.8004804953039,
+      "n_test": 150,
+      "position_error_median_mm": 1.5743378249060553,
+      "position_error_p90_mm": 3.618493776620944,
+      "snr_db": 20.0
+    },
+    {
+      "goodness_of_fit_median_percent": 99.93719919947509,
+      "n_test": 150,
+      "position_error_median_mm": 0.8409735411025596,
+      "position_error_p90_mm": 2.0106000366578107,
+      "snr_db": 25.0
+    },
+    {
+      "goodness_of_fit_median_percent": 99.97944289984434,
+      "n_test": 150,
+      "position_error_median_mm": 0.48850796752436226,
+      "position_error_p90_mm": 1.2825735366535946,
+      "snr_db": 30.0
+    },
+    {
+      "goodness_of_fit_median_percent": 99.99275194440756,
+      "n_test": 150,
+      "position_error_median_mm": 0.2833032447187832,
+      "position_error_p90_mm": 0.7472206939815059,
+      "snr_db": 35.0
+    }
+  ],
+  "software_environment": {
+    "byteorder": "little",
+    "package": "spherical_eeg_sim",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.12.13",
+    "software_versions": {
+      "h5py": "3.16.0",
+      "libhdf5": "2.0.0",
+      "matplotlib": "3.10.8",
+      "mne": "1.12.1",
+      "numpy": "2.4.4",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "spherical_eeg_sim": "1.0.0"
+    }
+  },
+  "target_snr_db": 35.0,
+  "target_snr_db_range": [
+    34.5,
+    35.5
+  ]
+}

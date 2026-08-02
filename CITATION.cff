@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "spherical_eeg_sim: a configurable EEG source-localization dataset generator"
+abstract: >-
+  A standalone, reproducible generator of synthetic scalp-EEG datasets for
+  training and benchmarking EEG source-localization methods. Features a
+  four-sphere analytic forward model, continuous dipole orientations, point /
+  multi-point / patch source modes, position-level held-out train/val/test
+  splits, two noise conventions (a fixed physical noise floor with emergent SNR
+  and per-sample target SNR), and an independent reversible unit-RMS output
+  transform.
+type: software
+authors:
+  - family-names: "Awan"
+    given-names: "Amjad Sultan"
+    email: "amawan@ttu.edu"
+    affiliation: "Department of Electrical and Computer Engineering, Texas Tech University"
+  - family-names: "Baker"
+    given-names: "Mary C."
+    affiliation: "Department of Electrical and Computer Engineering, Texas Tech University"
+version: "1.0.0"
+repository-code: "https://github.com/Amjad862/spherical_eeg_sim"
+url: "https://github.com/Amjad862/spherical_eeg_sim"
+license: "BSD-3-Clause"
+keywords:
+  - "EEG"
+  - "source localization"
+  - "electrical source imaging"
+  - "forward model"
+  - "synthetic dataset"
+  - "machine learning"
+  - "benchmark"

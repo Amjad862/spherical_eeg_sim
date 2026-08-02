@@ -1,0 +1,10 @@
+include README.md CONTRIBUTING.md CITATION.cff LICENSE validation-requirements.txt
+recursive-include docs *.md *.bib
+recursive-include examples *.py
+recursive-include scripts *.py
+recursive-include tests *.py
+recursive-include validation_results *.json *.png *.pdf *.csv SHA256SUMS
+recursive-include spherical_eeg_sim *.py py.typed
+recursive-include spherical_eeg_sim/montages *.csv
+recursive-include spherical_eeg_sim/montages/_templates *
+global-exclude __pycache__ *.py[cod] .DS_Store

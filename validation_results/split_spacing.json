@@ -1,0 +1,81 @@
+{
+  "baseline": {
+    "cortical_radius_range_mm": [
+      70.5,
+      79.5
+    ],
+    "master_seed": 862,
+    "n_cortical_positions": 8000,
+    "n_subcortical_positions": 1500,
+    "source_mode": "point",
+    "test_to_nearest_train_all_positions": {
+      "mean_mm": 3.679630979530602,
+      "median_mm": 3.298608455179073,
+      "min_mm": 1.0385730290989574,
+      "n": 1140,
+      "p90_mm": 4.96039219596073
+    },
+    "test_to_nearest_train_cortical": {
+      "mean_mm": 3.346043767518796,
+      "median_mm": 3.2316042271808927,
+      "min_mm": 2.657942727746389,
+      "n": 960,
+      "p90_mm": 4.002796283555235
+    },
+    "within_pool_cortical_nearest_neighbour": {
+      "mean_mm": 3.234710745873202,
+      "median_mm": 3.1343092847366663,
+      "min_mm": 2.657942727746389,
+      "n": 8000,
+      "p90_mm": 3.7584814061907736
+    }
+  },
+  "default": {
+    "cortical_radius_range_mm": [
+      70.5,
+      79.5
+    ],
+    "master_seed": 862,
+    "n_cortical_positions": 35000,
+    "n_subcortical_positions": 6500,
+    "source_mode": "point",
+    "test_to_nearest_train_all_positions": {
+      "mean_mm": 2.037607434420086,
+      "median_mm": 1.7797208323657916,
+      "min_mm": 0.36116022177681373,
+      "n": 3457,
+      "p90_mm": 2.9780284491651265
+    },
+    "test_to_nearest_train_cortical": {
+      "mean_mm": 1.8071898930285182,
+      "median_mm": 1.7143490957883936,
+      "min_mm": 1.2751315752827623,
+      "n": 2916,
+      "p90_mm": 2.3680684665287135
+    },
+    "within_pool_cortical_nearest_neighbour": {
+      "mean_mm": 1.742424082496951,
+      "median_mm": 1.6532290350027443,
+      "min_mm": 1.2671636001535904,
+      "n": 35000,
+      "p90_mm": 2.2324936450020316
+    }
+  },
+  "software_environment": {
+    "byteorder": "little",
+    "package": "spherical_eeg_sim",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.12.13",
+    "software_versions": {
+      "h5py": "3.16.0",
+      "libhdf5": "2.0.0",
+      "matplotlib": "3.10.8",
+      "mne": "1.12.1",
+      "numpy": "2.4.4",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "spherical_eeg_sim": "1.0.0"
+    }
+  }
+}

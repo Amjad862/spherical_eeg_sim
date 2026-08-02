@@ -1,0 +1,10 @@
+# Byte-exact working-tree content.
+#
+# validation_results/SHA256SUMS binds the archived validation results to the
+# code, documentation, and pinned requirements that produced them, and the
+# bundled electrode montages are hashed alongside them. Any end-of-line
+# translation between the repository and a working tree would change those
+# bytes and break the manifest on a platform whose checkout convention differs
+# from the one that generated it. Disabling the text filter keeps every file
+# identical on every platform.
+* -text

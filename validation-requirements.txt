@@ -1,0 +1,16 @@
+# Direct numerical dependencies of the executed validation experiments under
+# scripts/, pinned at the versions that produced the archived results in
+# validation_results/. The reference environment used CPython 3.12.13 on
+# x86_64 Linux with libhdf5 2.0.0; each archived summary records the full
+# software environment that produced it. Equivalent-current-dipole fitting and
+# multilayer-perceptron training are iterative, so low-order digits also depend
+# on the interpreter, the HDF5 build, and the BLAS backend. The rounded metrics
+# reported in the manuscript, not byte-identical digits, define the expected
+# reproduction target.
+numpy==2.4.4
+scipy==1.17.1
+h5py==3.16.0
+mne==1.12.1
+scikit-learn==1.9.0
+matplotlib==3.10.8
+mpmath==1.3.0

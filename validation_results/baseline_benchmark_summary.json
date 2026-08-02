@@ -1,0 +1,73 @@
+{
+  "dataset": {
+    "eeg_normalization": "per_sample_rms",
+    "n_cortical_positions": 8000,
+    "n_legendre": 60,
+    "n_subcortical_positions": 1500,
+    "n_test": 3000,
+    "n_train": 20000,
+    "n_val": 2000,
+    "noise_model": "snr_target",
+    "target_snr_db_range": [
+      10.0,
+      25.0
+    ]
+  },
+  "depth_stratified": [
+    {
+      "band": "deep (30-50 mm)",
+      "median_error_mm": 5.332003890550547,
+      "n": 176
+    },
+    {
+      "band": "mid (50-65 mm)",
+      "median_error_mm": 5.09934048283254,
+      "n": 263
+    },
+    {
+      "band": "superficial (>=65 mm)",
+      "median_error_mm": 4.670353465461175,
+      "n": 2561
+    }
+  ],
+  "figure": "baseline_benchmark.png",
+  "figure_sha256": "327ec5f7f93ea2d894e571ebed61b40813881ee4077b41a0177fe4b4ceaae2ad",
+  "hidden_layer_sizes": [
+    256,
+    128
+  ],
+  "localization_error_mm": {
+    "mean": 5.3463300926489365,
+    "median": 4.758038846950717,
+    "p90": 9.12375881859171
+  },
+  "method": "scikit-learn MLPRegressor on peak-GFP topography",
+  "model_selection": {
+    "best_epoch": 98,
+    "best_validation_mse_mm2": 12.717048884431755,
+    "criterion": "minimum validation mean squared position error",
+    "epochs_run": 113,
+    "patience_epochs": 15,
+    "validation_data": "position-held-out val.h5"
+  },
+  "montage": "standard_1010_69.csv",
+  "predict_training_mean_baseline_median_mm": 74.28467093834355,
+  "seed": 862,
+  "software_environment": {
+    "byteorder": "little",
+    "package": "spherical_eeg_sim",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.12.13",
+    "software_versions": {
+      "h5py": "3.16.0",
+      "libhdf5": "2.0.0",
+      "matplotlib": "3.10.8",
+      "mne": "1.12.1",
+      "numpy": "2.4.4",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "spherical_eeg_sim": "1.0.0"
+    }
+  }
+}

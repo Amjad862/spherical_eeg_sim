@@ -1,0 +1,44 @@
+{
+  "distribution_statistics": {
+    "absolute_noise_rms_uV": 1.0,
+    "master_seed": 862,
+    "noise_model": "absolute_floor",
+    "train_band_counts": [
+      0,
+      0,
+      3270,
+      1837,
+      893
+    ],
+    "train_snr_db": {
+      "maximum": 26.353729285095465,
+      "median": 5.253078348968993,
+      "minimum": -18.743118824244462,
+      "p01": -15.102157702655138,
+      "p99": 23.252929439848035
+    }
+  },
+  "files": {
+    "distributions.png": "cd8eb38fa7473a923dc3e93547e2b28a76dba0d6617cd874c632ab4704700456",
+    "pipeline_schematic.pdf": "3791d02d4cfa9c8c76fb9f696c7e8b17364026fce164ff57204573a5f95930fe",
+    "pipeline_schematic.png": "8cb5ebceeacbd40f686df718609ca5a578ffe0a3e976917a8d40ba180c10a146",
+    "topographies.png": "31678c4432cfc61066f0147c2ea60708d97abe1510bd73ac3e2c89a7477630e6"
+  },
+  "software_environment": {
+    "byteorder": "little",
+    "package": "spherical_eeg_sim",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.12.13",
+    "software_versions": {
+      "h5py": "3.16.0",
+      "libhdf5": "2.0.0",
+      "matplotlib": "3.10.8",
+      "mne": "1.12.1",
+      "numpy": "2.4.4",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "spherical_eeg_sim": "1.0.0"
+    }
+  }
+}

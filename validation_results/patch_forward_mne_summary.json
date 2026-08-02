@@ -1,0 +1,56 @@
+{
+  "active_dipoles_per_patch": {
+    "max": 460,
+    "median": 174,
+    "min": 16
+  },
+  "conductivities_S_per_m": [
+    0.33,
+    1.79,
+    0.0042,
+    0.33
+  ],
+  "distributed_patch": {
+    "max": 0.010073729256927105,
+    "median": 0.0027898422366466375,
+    "n": 60,
+    "p90": 0.004805150496071084
+  },
+  "n_cortical_positions": 35000,
+  "n_samples": 60,
+  "patch_diameter_mm": {
+    "max": 59.51648446320155,
+    "min": 10.541112130328086
+  },
+  "patch_to_control_median_ratio": 0.9196034985389566,
+  "point_source_control": {
+    "max": 0.008979120038198361,
+    "median": 0.00303374469657746,
+    "n": 60,
+    "p90": 0.004245250057325114
+  },
+  "radii_m": [
+    0.08,
+    0.081,
+    0.086,
+    0.092
+  ],
+  "seed": 20260703,
+  "software_environment": {
+    "byteorder": "little",
+    "package": "spherical_eeg_sim",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.12.13",
+    "software_versions": {
+      "h5py": "3.16.0",
+      "libhdf5": "2.0.0",
+      "matplotlib": "3.10.8",
+      "mne": "1.12.1",
+      "numpy": "2.4.4",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "spherical_eeg_sim": "1.0.0"
+    }
+  }
+}

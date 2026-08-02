@@ -1,0 +1,315 @@
+{
+  "accepted_order_range": [
+    40,
+    120
+  ],
+  "conductivities_S_per_m": [
+    0.33,
+    1.79,
+    0.0042,
+    0.33
+  ],
+  "config": {
+    "dataset": {
+      "n_test": 30000,
+      "n_train": 300000,
+      "n_val": 30000
+    },
+    "dipole": {
+      "codebook_tangential_directions": 256,
+      "cortical_magnitude_range_nAm": [
+        5.0,
+        300.0
+      ],
+      "magnitude_distribution": "log_uniform",
+      "orientation_mode": "uniform_s2",
+      "subcortical_magnitude_range_nAm": [
+        30.0,
+        500.0
+      ]
+    },
+    "electrode_file": "standard_1010_69.csv",
+    "head": {
+      "conductivities_S_per_m": [
+        0.33,
+        1.79,
+        0.0042,
+        0.33
+      ],
+      "n_legendre": 80,
+      "radii_m": [
+        0.08,
+        0.081,
+        0.086,
+        0.092
+      ],
+      "truncation_tail_tolerance": 0.05
+    },
+    "master_seed": 862,
+    "multi_point": {
+      "max_separation_attempts": 100,
+      "min_separation_mm": 20.0,
+      "n_sources_max": 5,
+      "n_sources_min": 1,
+      "separation_failure_policy": "raise",
+      "time_coupling": 0.0,
+      "time_coupling_values": null
+    },
+    "noise": {
+      "absolute_noise_rms_uV": 1.0,
+      "background_amplitude_concentration": 1.0,
+      "background_freq_alpha": 1.0,
+      "background_pool_size": 2000,
+      "background_radius_range_mm": [
+        70.5,
+        79.5
+      ],
+      "mix_physiological": 0.5,
+      "mix_pink": 0.35,
+      "mix_white": 0.15,
+      "n_background_sources": 10,
+      "noise_model": "absolute_floor",
+      "snr_db_range": [
+        0.0,
+        20.0
+      ],
+      "snr_definition": "referenced"
+    },
+    "output": {
+      "chunk_samples": 1000,
+      "compress": true,
+      "diagnostic_plots": false,
+      "diagnostic_sample_count": 1000,
+      "dtype": "float64",
+      "eeg_normalization": "none",
+      "format": "hdf5",
+      "graph_distance_threshold_m": null,
+      "graph_k": 6,
+      "graph_method": "knn",
+      "hdf5_chunk_rows": 64,
+      "n_workers": 1,
+      "overwrite": false,
+      "reference_channel": "Cz",
+      "reference_mode": "none",
+      "reference_weights": null,
+      "save_components": false,
+      "save_graph": false,
+      "save_leadfield": false
+    },
+    "output_dir": "output_eeg_dataset",
+    "patch": {
+      "diameter_range_mm": [
+        10.0,
+        60.0
+      ],
+      "dipoles_per_mm2": 1.0,
+      "falloff_profile": "gaussian"
+    },
+    "position_seed": null,
+    "sample_seed": null,
+    "signal": {
+      "band_order": [
+        "delta",
+        "theta",
+        "alpha",
+        "beta",
+        "gamma"
+      ],
+      "band_probabilities": {
+        "alpha": 0.35,
+        "beta": 0.2,
+        "delta": 0.2,
+        "gamma": 0.1,
+        "theta": 0.15
+      },
+      "bands_hz": {
+        "alpha": [
+          8.0,
+          13.0
+        ],
+        "beta": [
+          14.0,
+          30.0
+        ],
+        "delta": [
+          0.5,
+          4.0
+        ],
+        "gamma": [
+          30.0,
+          45.0
+        ],
+        "theta": [
+          4.0,
+          8.0
+        ]
+      },
+      "component_amplitude_jitter": true,
+      "component_dirichlet_concentration": 1.0,
+      "low_freq_band_policy": "restrict",
+      "min_band_cycles": 1.0,
+      "n_components_max": 3,
+      "n_components_min": 3,
+      "sampling_freq_hz": 500.0,
+      "window_samples": 100,
+      "zero_mean_signal": true
+    },
+    "source_mode": "point",
+    "sources": {
+      "cortical_radius_range_mm": [
+        70.5,
+        79.5
+      ],
+      "cortical_sampling": "fibonacci",
+      "n_cortical_positions": 35000,
+      "n_subcortical_positions": 6500,
+      "subcortical_fraction": 0.15,
+      "subcortical_radius_range_mm": [
+        30.0,
+        65.0
+      ],
+      "subcortical_sampling": "uniform_volume"
+    },
+    "split": {
+      "depth_bins": 10,
+      "stratify_by_depth": true
+    }
+  },
+  "configured_n_legendre": 80,
+  "montage": "standard_1010_69.csv",
+  "n_electrodes": 69,
+  "orders": [
+    20,
+    30,
+    40,
+    50,
+    60,
+    80,
+    100,
+    120
+  ],
+  "radii_m": [
+    0.08,
+    0.081,
+    0.086,
+    0.092
+  ],
+  "reference": {
+    "decimal_digits": 120,
+    "method": "mpmath arbitrary precision",
+    "order": 400,
+    "self_convergence": {
+      "comparison_order": 200,
+      "maximum_relative_error": 6.541917392844183e-13,
+      "passed": true,
+      "relative_error_by_case": {
+        "deep_radial_35mm": 0.0,
+        "mid_depth_radial_55mm": 0.0,
+        "superficial_radial_79_5mm": 6.541917392844183e-13,
+        "superficial_tangential_79_5mm": 1.9552170887771728e-14
+      },
+      "relative_error_tolerance": 1e-09
+    }
+  },
+  "relative_error": {
+    "deep_radial_35mm": {
+      "100": 2.8036824683204744e-14,
+      "120": 2.8036824683204744e-14,
+      "20": 1.0578826719552277e-09,
+      "30": 7.982581623978717e-14,
+      "40": 2.8036824683204744e-14,
+      "50": 2.8036824683204744e-14,
+      "60": 2.8036824683204744e-14,
+      "80": 2.8036824683204744e-14
+    },
+    "mid_depth_radial_55mm": {
+      "100": 3.357794151853671e-14,
+      "120": 3.357794151853671e-14,
+      "20": 1.1132884089528385e-05,
+      "30": 7.537651787992849e-08,
+      "40": 5.199453388907973e-10,
+      "50": 3.402945974734815e-12,
+      "60": 4.1897591836373134e-14,
+      "80": 3.357794151853671e-14
+    },
+    "superficial_radial_79_5mm": {
+      "100": 7.19703400817826e-07,
+      "120": 5.017029461866216e-06,
+      "20": 0.037126851030281564,
+      "30": 0.01003071345839022,
+      "40": 0.002687660323354988,
+      "50": 0.000707842361321824,
+      "60": 0.00018420271398222947,
+      "80": 1.2198362513210337e-05
+    },
+    "superficial_tangential_79_5mm": {
+      "100": 7.939069067052871e-08,
+      "120": 1.2963174382744265e-06,
+      "20": 0.005949806635462883,
+      "30": 0.001126257954777724,
+      "40": 0.00029853987446628916,
+      "50": 8.338690709440929e-05,
+      "60": 2.0256680291160837e-05,
+      "80": 8.84170393353592e-07
+    }
+  },
+  "software_environment": {
+    "byteorder": "little",
+    "package": "spherical_eeg_sim",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.12.13",
+    "software_versions": {
+      "h5py": "3.16.0",
+      "hdf5storage": "0.2.2",
+      "libhdf5": "2.0.0",
+      "matplotlib": "3.10.8",
+      "mne": "1.12.1",
+      "mpmath": "1.3.0",
+      "numpy": "2.4.4",
+      "pandas": "3.0.5",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "spherical_eeg_sim": "1.0.0"
+    }
+  },
+  "source_cases": [
+    {
+      "label": "superficial_radial_79_5mm",
+      "moment_local": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "radius_mm": 79.5
+    },
+    {
+      "label": "superficial_tangential_79_5mm",
+      "moment_local": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "radius_mm": 79.5
+    },
+    {
+      "label": "mid_depth_radial_55mm",
+      "moment_local": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "radius_mm": 55.0
+    },
+    {
+      "label": "deep_radial_35mm",
+      "moment_local": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "radius_mm": 35.0
+    }
+  ],
+  "tail_gate_would_reject_generation": false
+}

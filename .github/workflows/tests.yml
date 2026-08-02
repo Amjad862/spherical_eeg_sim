@@ -1,0 +1,85 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Full suite, including the MNE cross-implementation checks and the MATLAB
+  # v7.3 and plotting backends.
+  tests:
+    name: "python ${{ matrix.python-version }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test,plot]"
+      - name: Run tests
+        run: pytest -q
+
+  # The lowest interpreter the package claims to support. Optional backends are
+  # omitted here; the suite skips the tests that need them, so this job checks
+  # that the core generator runs on a bare install.
+  minimum-supported:
+    name: "python 3.9 (core dependencies only)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pytest
+      - name: Run tests
+        run: pytest -q
+
+  typing:
+    name: "static typing"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[typing]"
+      - name: Run mypy
+        run: mypy spherical_eeg_sim
+
+  # The archived validation results, the parameter documentation, and the
+  # scripts that produced them must stay bound together.
+  validation-manifest:
+    name: "validation manifest"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Verify checksums
+        run: sha256sum -c validation_results/SHA256SUMS
+      - name: Verify manifest is in sync
+        run: python scripts/make_validation_manifest.py --check
