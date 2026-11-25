@@ -1,5 +1,5 @@
 """
-Closed-loop source recovery with independent inverse solvers.
+Cross-implementation source recovery under matched spherical assumptions.
 
 End-to-end validation of the generator: known single-dipole sources are round-
 tripped through independent, community-standard localization pipelines. The
@@ -17,17 +17,16 @@ inverse (sLORETA) on a whole-brain volumetric grid. No claim about its bias or
 resolution is made until a particular run is archived and reported.
 
 ------------------------------------------------------------------------------
-WHY THIS IS A GENUINE CROSS-CHECK, NOT A SELF-CONSISTENCY TEST
+MATCHED-SPHERE CROSS-IMPLEMENTATION CHECK
 ------------------------------------------------------------------------------
 The scalp data are synthesized with the package's exact four-sphere series
 (de Munck & Peters 1993). MNE-Python inverts them using its own multilayer-sphere
 EEG forward, which fits the Berg-Scherg three-dipole equivalent-source
 approximation (Berg & Scherg 1994) -- an independent formulation. Close recovery
 therefore tests the generated scalp fields and labels against a different
-implementation, including the end-to-end coordinate handling. It does not claim
-that a spherical head is anatomically realistic. A related finite-element
-head-model and data-generation study is cited for context; that study is not a
-validation of this package and is not reproduced here.
+implementation under matched spherical geometry and conductivity assumptions.
+The scope is recovery within that model class, including end-to-end coordinate
+handling.
 
 Two design choices make the check robust and unambiguous:
   * The equivalent-current-dipole fit is the natural match to the single-dipole
@@ -41,10 +40,15 @@ Two design choices make the check robust and unambiguous:
 ------------------------------------------------------------------------------
 USAGE
 ------------------------------------------------------------------------------
+    python scripts/validate_inverse_mne.py --quick --no-sweep
     python scripts/validate_inverse_mne.py
     python scripts/validate_inverse_mne.py --n-test 300 --snr-db 35 --figure recovery.png
     python scripts/validate_inverse_mne.py --distributed --figure recovery.png
-    python scripts/validate_inverse_mne.py --quick
+    python scripts/validate_inverse_mne.py --write-canonical
+
+Ordinary runs save a new bundle under validation_runs/. The quick command
+writes a 60-dipole CSV and summary there. The archived CSV, summary and figure
+are regenerated together only with --write-canonical and publication settings.
 
 Requires MNE-Python and h5py:
     pip install "spherical_eeg_sim[all]"      # or: pip install mne h5py
@@ -65,7 +69,6 @@ import csv
 import hashlib
 import io
 import json
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -73,6 +76,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts._validation_outputs import (
+    ValidationOutputs, add_output_options, relative_reference,
+)
 from spherical_eeg_sim.provenance import environment_snapshot
 
 # Validation defaults. These are experiment settings for the recovery study,
@@ -101,22 +107,29 @@ DIST_LAMBDA2 = 1.0 / 9.0
 
 
 def generate_test_split(snr_db, n_test, montage, seed, pool_cortical, pool_sub,
-                        workdir, tag=None, reference_mode='none'):
+                        workdir, tag=None, reference_mode='none', snr_range=None, head=None):
     """Generate one point-mode dataset via the full pipeline; return the test file.
 
     A narrow SNR band centred on ``snr_db`` is used (the configuration validator
     requires a non-degenerate range). Only the test split is localized, so the
     train/val splits are kept minimal. When ``tag`` is given the dataset is
     written to a directory keyed by that tag rather than by SNR, so a run whose
-    SNR coincides with a sweep point cannot be overwritten by the sweep. Returns
-    (test_h5_path, radii_m, sigmas).
+    SNR coincides with a sweep point cannot be overwritten by the sweep.
+    ``snr_range`` replaces the narrow band by a range in dB (``snr_db`` is then
+    unused and ``tag`` is required), and ``head`` replaces the default head model
+    (radii in m, conductivities in S/m). Returns (test_h5_path, radii_m, sigmas).
     """
     from spherical_eeg_sim import Config, run_pipeline
 
+    if snr_range is not None and tag is None:
+        raise ValueError('a dataset with an SNR range needs a tag')
     cfg = Config()
+    if head is not None:
+        cfg.head.radii_m, cfg.head.conductivities_S_per_m = list(head[0]), list(head[1])
     cfg.source_mode = 'point'
     cfg.noise.noise_model = 'snr_target'
-    cfg.noise.snr_db_range = [snr_db - 0.5, snr_db + 0.5]
+    cfg.noise.snr_db_range = ([snr_db - 0.5, snr_db + 0.5] if snr_range is None
+                              else [float(snr_range[0]), float(snr_range[1])])
     cfg.sources.n_cortical_positions = pool_cortical
     cfg.sources.n_subcortical_positions = pool_sub
     cfg.dataset.n_train = max(40, n_test // 4)
@@ -141,7 +154,7 @@ def generate_test_split(snr_db, n_test, montage, seed, pool_cortical, pool_sub,
     )
 
 
-def recover(h5_path, radii, sigmas, min_dist_mm=MIN_DIST_MM):
+def recover(h5_path, radii, sigmas, min_dist_mm=MIN_DIST_MM, tol=None):
     """Localize every epoch with an MNE ECD fit on a matching origin-centred sphere.
 
     The dataset is reloaded through the package's own ``dataset_to_epochs`` path,
@@ -149,7 +162,9 @@ def recover(h5_path, radii, sigmas, min_dist_mm=MIN_DIST_MM):
     with the data. Each epoch is average-referenced and the equivalent-current
     dipole is fitted at the peak global-field-power time sample (the point-source
     topography is rank-1 in time, so any high-power sample carries the full
-    spatial pattern). Returns a dict of per-sample arrays.
+    spatial pattern). ``tol`` is the final trust-region radius of the dipole fit in
+    metres; without it the default of MNE-Python applies. Returns a dict of
+    per-sample arrays.
     """
     import mne
     mne.set_log_level('ERROR')
@@ -167,6 +182,7 @@ def recover(h5_path, radii, sigmas, min_dist_mm=MIN_DIST_MM):
         verbose=False,
     )
     cov = mne.make_ad_hoc_cov(info, verbose=False)
+    tolerance = {} if tol is None else dict(tol=float(tol))
 
     import h5py
     with h5py.File(h5_path, 'r') as f:
@@ -191,7 +207,7 @@ def recover(h5_path, radii, sigmas, min_dist_mm=MIN_DIST_MM):
         ev.set_eeg_reference('average', projection=True, verbose=False)
         t_peak = int(np.argmax(ev.data.std(axis=0)))
         ev.crop(ev.times[t_peak], ev.times[t_peak])
-        dip = mne.fit_dipole(ev, cov, sphere, min_dist=min_dist_mm, verbose=False)[0]
+        dip = mne.fit_dipole(ev, cov, sphere, min_dist=min_dist_mm, verbose=False, **tolerance)[0]
         fit_sample[i] = t_peak
         estimated_xyz[i] = dip.pos[0]
         err_mm[i] = float(np.linalg.norm(dip.pos[0] - true_xyz[i]) * 1000.0)
@@ -541,12 +557,43 @@ def main():
     ap.add_argument('--dist-grid-mm', type=float, default=DIST_GRID_MM,
                     help=f'sLORETA source-grid spacing in mm (default {DIST_GRID_MM:g})')
     ap.add_argument('--figure', default=None, help='path to save the figure')
-    ap.add_argument('--csv',
-                    default='validation_results/ecd_69ch_35db_per_sample.csv',
-                    help='path for the per-sample metrics CSV')
+    ap.add_argument('--csv', default=None, help='path for the per-sample metrics CSV')
     ap.add_argument('--summary-json', default=None,
-                    help='optional deterministic summary with the metrics CSV hash')
+                    help='path for the summary with the metrics CSV hash')
+    add_output_options(ap)
     args = ap.parse_args()
+
+    explicit = {
+        name: getattr(args, name) for name in ('csv', 'summary_json', 'figure')
+        if getattr(args, name) is not None
+    }
+    ordinary = {
+        'csv': 'inverse_recovery_metrics.csv',
+        'summary_json': 'inverse_recovery_summary.json',
+    }
+    if explicit:
+        directory = Path(next(iter(explicit.values()))).expanduser().parent
+        for key, name in ordinary.items():
+            explicit.setdefault(key, directory / name)
+    outputs = ValidationOutputs(
+        ap, args, name='inverse',
+        canonical={
+            'csv': 'ecd_69ch_35db_per_sample.csv',
+            'summary_json': 'ecd_69ch_35db_summary.json',
+            'figure': 'ecd_69ch_35db.png',
+        },
+        settings={
+            'montage': DEFAULT_MONTAGE, 'snr_db': DEFAULT_SNR_DB,
+            'n_test': DEFAULT_N_TEST, 'seed': 20260703,
+            'pool_cortical': DEFAULT_POOL_CORTICAL, 'pool_sub': DEFAULT_POOL_SUB,
+            'min_dist': MIN_DIST_MM, 'reference_mode': 'none',
+            'sweep': DEFAULT_SWEEP_DB, 'sweep_n': DEFAULT_SWEEP_N,
+            'no_sweep': False, 'quick': False, 'distributed': False,
+            'dist_grid_mm': DIST_GRID_MM,
+        },
+        explicit=explicit,
+        ordinary=ordinary,
+    )
 
     if args.quick:
         args.n_test = min(args.n_test, 60)
@@ -555,8 +602,14 @@ def main():
         args.pool_cortical = min(args.pool_cortical, 1500)
         args.pool_sub = min(args.pool_sub, 300)
 
-    workdir = tempfile.mkdtemp(prefix='sph_inv_val_')
-    try:
+    with outputs.stage() as paths:
+        _run(args, paths, outputs.paths)
+    for path in outputs.paths.values():
+        print(f"Wrote {path}")
+
+
+def _run(args, paths, final_paths):
+    with tempfile.TemporaryDirectory(prefix='.inverse-data-', dir=paths['csv'].parent.parent) as workdir:
         print("Closed-loop inverse recovery: spherical_eeg_sim -> MNE ECD fit")
         print(f"  montage={args.montage}  headline SNR={args.snr_db:g} dB  "
               f"n_test={args.n_test}  seed={args.seed}")
@@ -590,8 +643,7 @@ def main():
             dres = recover_distributed(h5, radii, sigmas, args.dist_grid_mm)
             print_distributed_summary(dres)
 
-        write_csv(res, args.csv, dres)
-        print(f"\nWrote per-sample metrics -> {args.csv}")
+        write_csv(res, paths['csv'], dres)
 
         sweep_db, sweep_median, sweep_results = [], [], []
         if not args.no_sweep and args.sweep:
@@ -627,12 +679,12 @@ def main():
                       f"{np.median(rs['gof']):12.2f}")
 
         figure_written = False
-        if args.figure:
+        if 'figure' in paths:
             figure_written = make_figure(
-                res, sweep_db, sweep_median, args.figure, dres
+                res, sweep_db, sweep_median, paths['figure'], dres
             )
 
-        if args.summary_json:
+        if 'summary_json' in paths:
             summary = {
                 'method': (
                     'MNE equivalent-current-dipole fit with independent '
@@ -641,9 +693,10 @@ def main():
                 'montage': args.montage,
                 'n_test': int(len(e)),
                 'seed': int(args.seed),
-                # Equivalent-current-dipole fitting is iterative, so the
-                # low-order digits of every metric below depend on the
-                # numerical stack recorded here.
+                # The Berg-Scherg parameter fit and the dipole fit of
+                # MNE-Python are iterative, so the metrics below depend on
+                # the platform as well as on the numerical stack recorded
+                # here (see scripts/run_sphere_fit_convergence.py).
                 'software_environment': environment_snapshot(),
                 'target_snr_db': float(args.snr_db),
                 'target_snr_db_range': [
@@ -652,6 +705,15 @@ def main():
                 'noise_model': 'snr_target',
                 'eeg_normalization': 'none',
                 'reference_mode': args.reference_mode,
+                'configuration': {
+                    'cortical_pool_size': args.pool_cortical,
+                    'subcortical_pool_size': args.pool_sub,
+                    'minimum_distance_mm': args.min_dist,
+                    'sweep_snr_db': list(sweep_db),
+                    'sweep_samples_per_snr': args.sweep_n if sweep_db else 0,
+                    'distributed': args.distributed,
+                    'distributed_grid_mm': args.dist_grid_mm if args.distributed else None,
+                },
                 'position_error_mm': {
                     'median': float(np.median(e)),
                     'p90': float(np.percentile(e, 90)),
@@ -691,36 +753,35 @@ def main():
                     'median': float(np.median(res['gof'])),
                 },
                 'snr_degradation_sweep': sweep_results,
-                'metrics_csv': Path(args.csv).name,
+                'metrics_csv': relative_reference(
+                    final_paths['csv'], final_paths['summary_json'],
+                ),
                 'metrics_csv_sha256': hashlib.sha256(
-                    Path(args.csv).read_bytes()
+                    paths['csv'].read_bytes()
                 ).hexdigest(),
             }
             if figure_written:
-                figure_path = Path(args.figure)
-                summary['figure'] = figure_path.name
+                figure_path = paths['figure']
+                summary['figure'] = relative_reference(
+                    final_paths['figure'], final_paths['summary_json'],
+                )
                 summary['figure_sha256'] = hashlib.sha256(
                     figure_path.read_bytes()
                 ).hexdigest()
-            summary_path = Path(args.summary_json)
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path = paths['summary_json']
             with summary_path.open('w', newline='\n') as f:
                 json.dump(summary, f, indent=2, sort_keys=True)
                 f.write('\n')
-            print(f"Wrote summary and SHA-256 -> {summary_path}")
 
-        print("\nInterpretation: under matched concentric-sphere assumptions, the "
-              "independent\nBerg-Scherg implementation recovers position and "
-              "orientation from data generated\nby the de Munck series to the "
-              "reported accuracy. This checks implementation,\nserialization, "
-              "labels, and coordinates; it does not establish anatomical realism.")
+        print("\nThe Berg-Scherg implementation and the de Munck series use "
+              "matched\nconcentric-sphere assumptions. The reported recovery "
+              "tests implementation,\nserialization, labels, and coordinates "
+              "within that model class.")
 
         if dres is not None:
             print("\nThe optional distributed panel reports its measured grid floor, "
                   "chance baseline, bias, and error without assigning those values "
                   "to all distributed inverse methods.")
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
 
 if __name__ == '__main__':

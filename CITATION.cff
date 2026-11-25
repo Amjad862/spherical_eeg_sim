@@ -5,8 +5,8 @@ abstract: >-
   A standalone, reproducible generator of synthetic scalp-EEG datasets for
   training and benchmarking EEG source-localization methods. Features a
   four-sphere analytic forward model, continuous dipole orientations, point /
-  multi-point / patch source modes, position-level held-out train/val/test
-  splits, two noise conventions (a fixed physical noise floor with emergent SNR
+  multi-point / patch source modes, configurable source-position splits,
+  two noise conventions (a fixed physical noise floor with emergent SNR
   and per-sample target SNR), and an independent reversible unit-RMS output
   transform.
 type: software
@@ -18,9 +18,13 @@ authors:
   - family-names: "Baker"
     given-names: "Mary C."
     affiliation: "Department of Electrical and Computer Engineering, Texas Tech University"
-version: "1.0.0"
+version: "1.1.0"
 repository-code: "https://github.com/Amjad862/spherical_eeg_sim"
 url: "https://github.com/Amjad862/spherical_eeg_sim"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21763143"
+    description: "Zenodo concept DOI for all archived versions"
 license: "BSD-3-Clause"
 keywords:
   - "EEG"

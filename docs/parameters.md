@@ -83,12 +83,13 @@ domains) live directly on `cfg`.
 ### `cfg.position_seed` / `cfg.sample_seed`
 - **Type**: optional non-negative integers; both default to `None`.
 - **What**: A null value falls back to `master_seed`. `position_seed` controls
-  the source pool, its split assignment, and the background projection pool;
+  the source pool, the `position` and `shared` assignments, and the background
+  projection pool. The `region` assignment has its own `region_rotation_seed`.
   `sample_seed` controls per-window source/signal/noise streams, with each
   window derived from `(sample_seed, split_id, global_sample_index)` via
   `SeedSequence`. Separate domains support paired or factorial acquisition
-  designs with a shared position split but independent generated windows. Both
-  values are canonical scientific provenance, and output remains independent
+  designs with the same position assignment and independently generated windows.
+  Both values are canonical scientific provenance, and output remains independent
   of `cfg.output.chunk_samples` and `cfg.output.n_workers`.
 
 ### `cfg.source_mode`
@@ -243,13 +244,11 @@ domains) live directly on `cfg`.
   3. Precedent in deep-learning ESI work targeting subcortex (Yokoyama
      et al., 2024) uses simulated cortical and subcortical training sources.
 - **Range**: 0.0 (cortex-only) to 1.0 (subcortex-only).
-- **Split coupling**: this fraction is realised per sample by drawing from the
-  subcortical positions *that fall in the sample's split*. The position split is
-  **population-aware** (cortical and subcortical positions are each split into
-  train/val/test by the configured fractions), so every split is guaranteed a
-  subcortical position whenever that population is enabled. Validation requires
-  at least three positions in every population with nonzero sampling
-  probability, one for each split.
+- **Split coupling**: draws use the population's eligible positions in each
+  split. The default assignment stratifies cortical and subcortical positions
+  separately. A buffered region assignment raises if it leaves any split
+  without an enabled population. An enabled population needs at least three
+  pool positions for separate assignments, or one for a fully shared pool.
 
 ### `n_cortical_positions` / `n_subcortical_positions`
 - **Defaults**: `35_000` / `6_500`
@@ -367,8 +366,8 @@ domains) live directly on `cfg`.
   `separation_failure_policy='raise'`, exhausting the attempt budget aborts with
   the sample/source index; a published corpus therefore cannot violate its
   advertised separation. Exploratory runs may explicitly select
-  `accept_and_flag`, which accepts the last candidate and writes
-  `separation_violated=true`.
+  `accept_and_flag`, which then accepts one further draw from the pool
+  positions not yet used in the sample and writes `separation_violated=true`.
 - **Feasibility check**: configuration validation rejects a separation larger
   than the diameter of the configured source space, since no pair of positions
   could ever satisfy it. That check runs before the position pool and lead-field
@@ -496,6 +495,15 @@ mode. The canonical source-pool metadata records zero subcortical positions.
   and therefore directly auditable.
 
 ---
+
+### `report_overlap`
+
+Defaults to `True`. After generation, `validation_report.json` summarizes
+the nearest-centre distances and best spherical-cap intersection over union
+across splits. The caps use the saved centre and diameter and describe the
+nominal continuous footprints. Very large workloads can use a deterministic
+subset of query patches. Each scored query searches the full reference split.
+Elapsed time is recorded in the runtime sidecar.
 
 ## Signal: `cfg.signal`
 
@@ -745,15 +753,67 @@ mode. The canonical source-pool metadata records zero subcortical positions.
 
 ## Split: `cfg.split`
 
+### `policy`
+
+- `position` is the default. Each source position has exactly one split.
+  Patches use equally sized cortical support meshes across splits. This
+  policy prevents exact index reuse across splits and can leave nearby
+  positions or overlapping continuous patch footprints.
+- `region` is available in every source mode. Set `region_count`
+  to an integer of at least three, `buffer_mm` to a finite non-negative
+  Euclidean clearance, and `region_rotation_seed` to a non-negative integer.
+  The configuration must leave at least one sector for each split. Whole
+  rotated spherical Voronoi sectors are assigned with latitude coverage.
+  Test positions stay intact, validation is buffered from test, and training
+  is buffered from both across both populations. Generation stops if a split
+  loses every position of an enabled population.
+
+  In patch mode the policy also contains every patch in its own split. A
+  patch is centred only where its whole footprint, the cap of directions
+  within `diameter / 2` of the centre measured on the centre's radius, lies
+  inside the sectors of its split and contains no position of another split
+  or of the buffer. The planner uses a lower bound on the distance to
+  sectors of other splits. Near a sector corner it can exclude a centre
+  even if the footprint would fit. The diameter is drawn first and the
+  centre uniformly from the admitted positions, so every split keeps the
+  configured diameter distribution. Footprints of different splits are
+  disjoint and their active dipoles are at least `buffer_mm` apart.
+  Planning stops if a split has no admitted centre for the largest
+  configured diameter and warns if it has fewer than 50.
+  Six to eight sectors suit the default 10 to 60 mm diameters. Each split
+  keeps the full pool density inside its region, where the default policy
+  gives each split one third of the pool; use one third of the pool size
+  for the same support density. `source_pool.*` stores the planner's radius
+  limit at each position as `patch_containment_radius_mm`. The report field
+  `largest_admissible_diameter_mm` is twice the largest such limit in the split.
+- `shared` is available for point and multi-point modes, not for patches. Set
+  `shared_position_fraction` in `(0, 1]`. For each population, the common core
+  contains the requested fraction of positions rounded down to a whole
+  position. Other positions retain their disjoint default assignments. A
+  fraction of 1 gives all three splits the same finite pool. Each split has
+  independent per-window seeds. The observed share of windows using a
+  previously used location depends on the draws and the number of windows.
+
+`plan_position_split(cfg)` returns the geometry before generation. Its
+`positions_xyz` are in metres and its `indices` mapping gives eligible pool
+rows for `train`, `val`, and `test`. `source_pool.*` and optional `leadfield.*`
+store the same global indexing. Their `split` codes are 0/1/2 for train/val/test,
+with −1 for a buffer exclusion and −2 for a shared position. Shared-policy
+files also include `split_membership`, with one 0/1 column per split in that order.
+
+After writing, the pipeline verifies that serialized source-pool indices are
+nonempty and eligible for their split. For `position` and `region`, it also
+verifies disjointness. The report includes all three cross-split nearest-
+neighbour comparisons in millimetres, using both eligible positions and the
+distinct positions actually used. Each population-specific result restricts
+both sides of the comparison to that population. Region reports include
+pre-buffer and retained counts, radial bin counts, sector assignments, and
+the verified clearance. Shared reports separate eligibility from observed reuse.
+
 ### `stratify_by_depth`
 - **Default**: `True`
-- **What**: Stratify the train/val/test split by radial depth bins so
-  every split has balanced superficial/deep representation.
-- **Serialized audit**: After all three files are finalized, the pipeline reads
-  `position_pool_idx` (and every patch active-support index) back from the
-  selected HDF5, NPZ, or MATLAB backend. It verifies that serialized indices
-  are nonempty, belong to the assigned pool, and do not overlap across splits.
-  Any failed distribution or leakage check aborts staged publication.
+- **What**: Stratify the exact-position assignment by radial depth. The
+  split-specific part of a partially shared assignment uses the same rule.
 
 ### `depth_bins`
 - **Default**: `10`
@@ -769,11 +829,8 @@ mode. The canonical source-pool metadata records zero subcortical positions.
 
 ### `n_train` / `n_val` / `n_test`
 - **Defaults**: `300_000` / `30_000` / `30_000`
-- **What**: Number of samples per split. Each sample has a unique
-  combination of position, orientation, magnitude, signal, and noise.
-  Multiple samples share positions (since the position pool is much
-  smaller than n_train) but never across splits (position-level
-  disjointness is enforced).
+- **What**: Number of independently seeded windows per split. The split
+  policy determines which source locations the windows can reuse.
 - **Basis and scope**: Large simulated datasets are established practice in
   supervised ESI (Hecker et al., 2021; Sun et al., 2022; Reynaud et al., 2024).
   The exact 300,000/30,000/30,000 allocation is a declared benchmark-capacity
@@ -939,8 +996,12 @@ actual canonical files to agree exactly.
   sequential minibatch reads; smaller values speed up shuffled single-sample
   access. Use `1` for predominantly shuffled single-sample reads unless a
   measured access trace justifies a larger value.
-  It is independent of `chunk_samples`, so generation chunk boundaries do not
-  alter the HDF5 layout. It affects the canonical storage layout and read
+  It is independent of `chunk_samples`: the writer stores blocks of complete
+  storage chunks in a fixed order and keeps the rows of an unfinished block in
+  memory, so generation chunk boundaries do not alter the HDF5 layout. A block
+  is one storage chunk, or the smallest whole number of storage chunks that
+  reaches 64 rows when this value is smaller, so small values do not multiply
+  the number of write calls. It affects the canonical storage layout and read
   performance, not generated array values. Must be a positive int.
 
 ### `n_workers`
@@ -965,6 +1026,9 @@ actual canonical files to agree exactly.
   directory with a valid package/target/metadata marker is restored if the
   target name is absent. Rollback-like directories without that marker are
   never used or deleted. Ambiguous states fail closed.
+  Concurrent generation or recovery for the same target raises
+  `BlockingIOError`. The sibling `.<target>.generation.lock` stays in place
+  between runs. Its OS lock is released when the process closes it or exits.
   Portable
   replacement is a rename-and-rollback transaction, not an atomic exchange of
   two non-empty directories.

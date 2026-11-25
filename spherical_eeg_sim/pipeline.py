@@ -6,10 +6,9 @@ Wires together every other module into a single end-to-end run:
     config -> validate forward model
            -> load electrodes
            -> compute transfer coefficients (M_tilde)
-           -> sample cortical and subcortical positions
+           -> sample positions and assign train/val/test source eligibility
            -> compute basis lead-field tensor
            -> compute background-noise lead-field pool
-           -> assign train/val/test position-level splits
            -> for each split, in chunks of cfg.output.chunk_samples:
                 generate signals, noise, and EEG via the mode dispatcher
                 append the chunk to an extendable HDF5 dataset (or
@@ -26,6 +25,7 @@ Usage:
 """
 
 from __future__ import annotations
+from contextlib import ExitStack
 import json
 import hashlib
 import logging
@@ -40,7 +40,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from .config import Config
-from ._compat import import_hdf5storage
+from ._output_lock import lock_output
 from .provenance import environment_snapshot
 from .ragged import RaggedArray, concatenate_ragged
 from .core.forward import (
@@ -48,12 +48,8 @@ from .core.forward import (
     forward_potential_batch,
 )
 from .core.electrodes import load_electrodes, resolve_reference, apply_reference
-from .sources.sampling import (
-    sample_cortical_positions,
-    sample_subcortical_positions,
-    cartesian_to_spherical,
-    make_position_split,
-)
+from .sources.sampling import cartesian_to_spherical
+from .sources.partition import _plan_partition, _setup_rngs
 from .sources.modes import (
     generate_point_samples,
     generate_multi_point_samples,
@@ -72,6 +68,7 @@ from .signals.noise import (
     sample_snr_db,
 )
 from .io.writer import (
+    ChunkedHDF5Writer,
     canonical_config,
     open_split_writer,
     write_leadfield_operator,
@@ -83,6 +80,8 @@ from .io.writer import (
 from .io.graph_export import write_electrode_graph
 from .validation.forward_check import validate_forward_model
 from .validation.distribution_check import validate_distributions
+from .validation.patch_overlap import patch_overlap_report
+from .validation.split_geometry import audit_split_geometry
 
 
 logger = logging.getLogger('spherical_eeg_sim')
@@ -109,11 +108,17 @@ def run_pipeline(cfg: Config, log_level: int = logging.INFO) -> Dict[str, Any]:
     """
     cfg.validate()
     _setup_logging(log_level)
-    run_started = time.time()
     target = Path(cfg.output_dir).expanduser().resolve()
     if target in (Path('/'), Path.cwd().resolve()):
         raise ValueError("output_dir must be a dedicated dataset directory")
     target.parent.mkdir(parents=True, exist_ok=True)
+    with lock_output(target):
+        return _publish_dataset(cfg, target, log_level)
+
+
+def _publish_dataset(cfg: Config, target: Path, log_level: int) -> Dict[str, Any]:
+    """Recover, generate and publish while holding the lock for this target."""
+    run_started = time.time()
     if target.exists() and not target.is_dir():
         raise NotADirectoryError(
             f"Output path {target} exists and is not a directory"
@@ -127,7 +132,7 @@ def run_pipeline(cfg: Config, log_level: int = logging.INFO) -> Dict[str, Any]:
             'output_dir': str(target),
             'recovered_completed_staging': True,
             'wall_time_seconds': float(wall_time_seconds),
-            **environment_snapshot(),
+            **environment_snapshot(include_paths=True),
         }
         with runtime_temp.open('w', newline='\n') as f:
             json.dump(runtime, f, indent=2, sort_keys=True)
@@ -176,18 +181,24 @@ def run_pipeline(cfg: Config, log_level: int = logging.INFO) -> Dict[str, Any]:
         )
         _remove_staging_marker(staging)
         _commit_staged_directory(staging, target, cfg.output.overwrite)
-    except Exception:
+    except BaseException as error:
         # Preserve a checksum-complete staging tree.  In particular, an
         # exhausted Windows sharing-violation retry during publication must not
         # discard hours of completed generation; the next invocation can
         # verify and publish this tree without regenerating it.
-        if staging.exists() and not _directory_checksum_complete(staging):
-            _rmtree_with_retry(staging)
-        elif staging.exists():
-            logger.error(
-                "Preserving checksum-complete staging tree for startup recovery: %s",
-                staging,
-            )
+        try:
+            if staging.exists() and not _directory_checksum_complete(staging):
+                _rmtree_with_retry(staging)
+            elif staging.exists():
+                logger.error(
+                    "Preserving checksum-complete staging tree for startup recovery: %s",
+                    staging,
+                )
+        except OSError as cleanup_error:
+            message = f'Could not clean up staging directory {staging}: {cleanup_error}'
+            logger.warning(message, exc_info=True)
+            if hasattr(error, 'add_note'):
+                error.add_note(message)
         raise
 
     runtime_path = target.parent / f'{target.name}.runtime.json'
@@ -200,8 +211,10 @@ def run_pipeline(cfg: Config, log_level: int = logging.INFO) -> Dict[str, Any]:
         'n_workers_requested': int(cfg.output.n_workers),
         'n_workers_used': int(_resolve_n_workers(cfg.output.n_workers)),
         'wall_time_seconds': float(wall_time_seconds),
-        **environment_snapshot(),
+        **environment_snapshot(include_paths=True),
     }
+    if summary['patch_overlap_wall_time_seconds'] is not None:
+        runtime['patch_overlap_wall_time_seconds'] = summary['patch_overlap_wall_time_seconds']
     with runtime_temp.open('w', newline='\n') as f:
         json.dump(runtime, f, indent=2, sort_keys=True)
         f.write('\n')
@@ -332,70 +345,21 @@ def _run_pipeline_impl(
     # 4. Sample positions and assign splits
     # -------------------------------------------------------------------------
     logger.info("")
-    logger.info("[4/8] Sampling positions and computing position-level splits...")
+    logger.info("[4/8] Sampling positions and planning source splits...")
 
-    position_seed = cfg.master_seed if cfg.position_seed is None else cfg.position_seed
     sample_seed = cfg.master_seed if cfg.sample_seed is None else cfg.sample_seed
-    master_rng = np.random.default_rng(position_seed)
-    # Independent sub-streams for the one-off setup stages only: the position
-    # pool, the train/val/test split assignment, and the background-noise
-    # lead-field pool. Per-sample data generation does NOT draw from these.
-    # Instead every sample derives its own seeds from
-    # (master_seed, split_id, global_sample_index), so the generated data are
-    # a pure function of the master seed and the sample's global index and are
-    # therefore identical regardless of the streaming chunk size. See
-    # ``_generate_one_sample``.
-    rng_pos = np.random.default_rng(master_rng.integers(0, 2**31))
-    rng_split = np.random.default_rng(master_rng.integers(0, 2**31))
-    rng_bg_pool = np.random.default_rng(master_rng.integers(0, 2**31))
-
-    cort_xyz = sample_cortical_positions(
-        cfg.sources.n_cortical_positions,
-        cfg.sources.cortical_radius_range_mm,
-        cfg.sources.cortical_sampling,
-        rng_pos,
-    )
-    if cfg.source_mode == 'patch':
-        sub_xyz = np.empty((0, 3), dtype=np.float64)
-    else:
-        sub_xyz = sample_subcortical_positions(
-            cfg.sources.n_subcortical_positions,
-            cfg.sources.subcortical_radius_range_mm,
-            cfg.sources.subcortical_sampling,
-            rng_pos,
-        )
-    positions_xyz = np.concatenate([cort_xyz, sub_xyz], axis=0)
-    population = np.concatenate([
-        np.zeros(cort_xyz.shape[0], dtype=np.int8),
-        np.ones(sub_xyz.shape[0], dtype=np.int8),
-    ])
+    rng_pos, rng_split, rng_bg_pool = _setup_rngs(cfg)
+    partition = _plan_partition(cfg, rng_pos, rng_split)
+    positions_xyz = partition.positions_xyz
+    population = partition.population
     logger.info(
         "      %d cortical + %d subcortical = %d positions",
-        cort_xyz.shape[0], sub_xyz.shape[0], positions_xyz.shape[0],
+        np.sum(population == 0), np.sum(population == 1), positions_xyz.shape[0],
     )
 
-    # Patch support is drawn from the split-local cortical mesh.  Equal-sized
-    # position meshes keep its spatial sampling density comparable across
-    # train/validation/test even when the numbers of generated samples differ.
-    # Point and multi-point modes retain sample-proportional position pools.
-    if cfg.source_mode == 'patch':
-        position_split_targets = (1, 1, 1)
-        position_split_basis = 'equal-density patch support meshes'
-    else:
-        position_split_targets = (
-            cfg.dataset.n_train, cfg.dataset.n_val, cfg.dataset.n_test,
-        )
-        position_split_basis = 'sample-count proportions'
-    split = make_position_split(
-        positions_xyz,
-        *position_split_targets,
-        cfg.split.stratify_by_depth, cfg.split.depth_bins,
-        rng_split,
-        population=population,
-    )
-    train_global = np.where(split.split == 0)[0]
-    val_global = np.where(split.split == 1)[0]
-    test_global = np.where(split.split == 2)[0]
+    train_global = partition.indices['train']
+    val_global = partition.indices['val']
+    test_global = partition.indices['test']
     n_train_pos = int(train_global.size)
     n_val_pos = int(val_global.size)
     n_test_pos = int(test_global.size)
@@ -403,7 +367,7 @@ def _run_pipeline_impl(
         "      Position split: train=%d, val=%d, test=%d (positions, not samples)",
         n_train_pos, n_val_pos, n_test_pos,
     )
-    logger.info("      Position allocation basis: %s", position_split_basis)
+    logger.info("      Position allocation basis: %s", partition.allocation_basis)
 
     # -------------------------------------------------------------------------
     # 5. Compute basis lead-field tensor at all positions
@@ -508,7 +472,7 @@ def _run_pipeline_impl(
             leadfield=leadfield_to_write,
             positions_xyz=positions_xyz,
             population=population,
-            split_label=split.split,
+            split_label=partition.split_labels,
             electrodes=electrodes_block,
             head={
                 'radii_m': list(cfg.head.radii_m),
@@ -517,6 +481,8 @@ def _run_pipeline_impl(
             },
             fmt=cfg.output.format,
             compress=cfg.output.compress,
+            split_policy=cfg.split.policy,
+            split_membership=partition.membership,
         )
         logger.info("  Wrote lead-field operator %s (%.1f MB)",
                     lf_path.name, lf_path.stat().st_size / 1e6)
@@ -527,9 +493,12 @@ def _run_pipeline_impl(
         output_dir=output_dir,
         positions_xyz=positions_xyz,
         population=population,
-        split_label=split.split,
+        split_label=partition.split_labels,
         fmt=cfg.output.format,
         compress=cfg.output.compress,
+        split_policy=cfg.split.policy,
+        split_membership=partition.membership,
+        patch_containment_radius_mm=partition.patch_containment_radius_mm,
     )
     logger.info("  Wrote source-position pool %s", pool_path.name)
 
@@ -557,6 +526,10 @@ def _run_pipeline_impl(
         pool_pos = positions_xyz[pool_indices]
         pool_lf = leadfield[pool_indices]
         pool_pop = population[pool_indices]
+        pool_containment = (
+            None if partition.patch_containment_radius_mm is None
+            else partition.patch_containment_radius_mm[pool_indices]
+        )
 
         path, snr_db_split, diagnostic_sample, val_stats = _run_one_split(
             cfg=cfg,
@@ -575,6 +548,7 @@ def _run_pipeline_impl(
             eff_band_probs=eff_band_probs,
             band_info=band_info,
             electrodes_block=electrodes_block,
+            patch_containment_radius_mm=pool_containment,
         )
         split_paths[split_name] = path
         sample_summary[split_name] = {
@@ -602,14 +576,25 @@ def _run_pipeline_impl(
     logger.info("")
     logger.info("[8/8] Running distribution validation on the full train split...")
 
-    serialized_position_indices = {
-        name: _read_serialized_position_indices(path, cfg.source_mode)
+    truth_keys = ['position_pool_idx']
+    if cfg.source_mode == 'patch':
+        truth_keys.append('patch_active_position_idx')
+        if cfg.patch.report_overlap or partition.patch_containment_radius_mm is not None:
+            truth_keys.append('patch_diameter_mm')
+    split_truth = {
+        name: _read_serialized_ground_truth(path, truth_keys)
         for name, path in split_paths.items()
     }
-    assigned_position_indices = {
-        'train': train_global,
-        'val': val_global,
-        'test': test_global,
+    position_rows = {
+        name: truth['position_pool_idx'].reshape(getattr(cfg.dataset, f'n_{name}'), -1)
+        for name, truth in split_truth.items()
+    }
+    serialized_position_indices = {
+        name: np.concatenate([
+            truth[key].astype(np.int64, copy=False).ravel() for key in truth_keys
+            if key != 'patch_diameter_mm'
+        ])
+        for name, truth in split_truth.items()
     }
 
     dist_result = validate_distributions(
@@ -630,10 +615,11 @@ def _run_pipeline_impl(
         train_position_indices=train_global,
         val_position_indices=val_global,
         test_position_indices=test_global,
-        assigned_position_indices=assigned_position_indices,
+        assigned_position_indices=partition.indices,
         serialized_position_indices=serialized_position_indices,
         source_mode=cfg.source_mode,
         noise_model=cfg.noise.noise_model,
+        split_policy=cfg.split.policy,
     )
     for c in dist_result.checks:
         status = 'PASS' if c.passed else 'FAIL'
@@ -642,6 +628,25 @@ def _run_pipeline_impl(
         logger.info(
             "      [INFO] %-32s %s", diagnostic.name, diagnostic.detail,
         )
+    if not dist_result.all_passed:
+        failed = ', '.join(c.name for c in dist_result.checks if not c.passed)
+        raise RuntimeError(
+            "Distribution validation failed; staged dataset was not published. "
+            f"Failed checks: {failed}"
+        )
+    source_split_report = audit_split_geometry(
+        cfg, partition, serialized_position_indices, position_rows,
+        patch_diameter_mm=(
+            {name: truth['patch_diameter_mm'].ravel() for name, truth in split_truth.items()}
+            if partition.patch_containment_radius_mm is not None else None
+        ),
+    )
+    patch_report = None
+    patch_wall_time = None
+    if cfg.source_mode == 'patch' and cfg.patch.report_overlap:
+        start = time.perf_counter()
+        patch_report = patch_overlap_report(positions_xyz, split_truth)
+        patch_wall_time = time.perf_counter() - start
     val_report_path = output_dir / 'validation_report.json'
     val_report_temp = output_dir / '.validation_report.writing.json'
     from .io.writer import _jsonify
@@ -661,15 +666,11 @@ def _run_pipeline_impl(
                 'n_test_dipoles': fv.n_test_dipoles,
             },
             'distributions': dist_result.to_dict(),
+            'source_split': source_split_report,
+            **({'patch_overlap': patch_report} if patch_report is not None else {}),
         }), f, indent=2, sort_keys=True)
         f.write('\n')
     _replace_with_retry(val_report_temp, val_report_path)
-    if not dist_result.all_passed:
-        failed = ', '.join(c.name for c in dist_result.checks if not c.passed)
-        raise RuntimeError(
-            "Distribution validation failed; staged dataset was not published. "
-            f"Failed checks: {failed}"
-        )
 
     environment_path = output_dir / 'environment.json'
     environment_temp = output_dir / '.environment.writing.json'
@@ -681,7 +682,7 @@ def _run_pipeline_impl(
     # -------------------------------------------------------------------------
     # Manifest + README
     # -------------------------------------------------------------------------
-    extras = {
+    extras: Dict[str, Any] = {
         'electrode_array': {
             'n_electrodes': electrodes.n_electrodes,
             'names': electrodes.names,
@@ -693,7 +694,8 @@ def _run_pipeline_impl(
             'split_train_positions': n_train_pos,
             'split_val_positions': n_val_pos,
             'split_test_positions': n_test_pos,
-            'allocation_basis': position_split_basis,
+            'allocation_basis': partition.allocation_basis,
+            'policy': cfg.split.policy,
         },
         'samples_per_split': sample_summary,
         'reference': {
@@ -771,6 +773,7 @@ def _run_pipeline_impl(
         'validation_report': str(val_report_path.resolve()),
         'checksums': str(checksum_path.resolve()),
         'wall_time_seconds': time.time() - t0,
+        'patch_overlap_wall_time_seconds': patch_wall_time,
     }
 
 
@@ -790,7 +793,40 @@ def _rmtree_with_retry(path: Path, attempts: int = 6) -> None:
     """Remove an owned transaction tree despite transient Windows locks."""
     for attempt in range(attempts):
         try:
-            shutil.rmtree(path)
+            marker = path / '.spherical_eeg_sim.transaction.json'
+            if not marker.is_file():
+                marker = path / _ROLLBACK_MARKER
+            if marker.is_file():
+                # A locked child can prevent removal on Windows. Preserve the
+                # ownership record until all such children are gone so a
+                # subsequent run can still recognize the interrupted tree.
+                protected = {marker: marker.read_bytes()}
+                if marker.name == _ROLLBACK_MARKER:
+                    protected.update({
+                        path / name: (path / name).read_bytes()
+                        for name in ('metadata.json', 'checksums.sha256')
+                        if (path / name).is_file()
+                    })
+                for child in path.iterdir():
+                    if child in protected:
+                        continue
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                try:
+                    for child in protected:
+                        if child != marker:
+                            child.unlink()
+                    marker.unlink()
+                    path.rmdir()
+                except OSError:
+                    for child, contents in protected.items():
+                        if not child.exists():
+                            child.write_bytes(contents)
+                    raise
+            else:
+                shutil.rmtree(path)
             return
         except PermissionError:
             if attempt + 1 == attempts:
@@ -812,6 +848,7 @@ def _remove_staging_marker(staging: Path, attempts: int = 6) -> None:
 
 
 _ROLLBACK_MARKER = '.spherical_eeg_sim.rollback.json'
+_ROLLBACK_WRITING = f'{_ROLLBACK_MARKER}.writing'
 
 
 def _write_rollback_marker(target: Path) -> None:
@@ -823,12 +860,17 @@ def _write_rollback_marker(target: Path) -> None:
         'target_name': target.name,
         'metadata_sha256': hashlib.sha256(metadata_path.read_bytes()).hexdigest(),
     }
-    marker_path = target / _ROLLBACK_MARKER
-    with marker_path.open('w', encoding='utf-8', newline='\n') as handle:
+    _write_rollback_record(target, marker)
+
+
+def _write_rollback_record(directory: Path, marker: Dict[str, Any]) -> None:
+    writing = directory / _ROLLBACK_WRITING
+    with writing.open('w', encoding='utf-8', newline='\n') as handle:
         json.dump(marker, handle, indent=2, sort_keys=True)
         handle.write('\n')
         handle.flush()
         os.fsync(handle.fileno())
+    _replace_with_retry(writing, directory / _ROLLBACK_MARKER)
 
 
 def _remove_rollback_marker(directory: Path, attempts: int = 6) -> None:
@@ -836,6 +878,7 @@ def _remove_rollback_marker(directory: Path, attempts: int = 6) -> None:
     marker = directory / _ROLLBACK_MARKER
     for attempt in range(attempts):
         try:
+            (directory / _ROLLBACK_WRITING).unlink(missing_ok=True)
             marker.unlink(missing_ok=True)
             return
         except PermissionError:
@@ -858,8 +901,41 @@ def _is_owned_rollback(directory: Path, target: Path) -> bool:
         and marker.get('transaction_kind') == 'dataset_rollback'
         and marker.get('target_name') == target.name
         and marker.get('metadata_sha256') == metadata_digest
+        and not marker.get('cleanup_started', False)
         and _directory_checksum_complete(directory)
     )
+
+
+def _is_owned_cleanup_backup(directory: Path, target: Path) -> bool:
+    """Recognize a partially removed backup after a verified replacement."""
+    try:
+        marker = json.loads((directory / _ROLLBACK_MARKER).read_text(encoding='utf-8'))
+        old_metadata = hashlib.sha256((directory / 'metadata.json').read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return False
+    return (
+        marker.get('package') == 'spherical_eeg_sim'
+        and marker.get('transaction_kind') == 'dataset_rollback'
+        and marker.get('target_name') == target.name
+        and marker.get('metadata_sha256') == old_metadata
+        and marker.get('cleanup_started') is True
+        and _directory_checksum_complete(target)
+    )
+
+
+def _cleanup_published_backup(backup: Path, target: Path) -> None:
+    """Clean an old backup without failing an already completed publication."""
+    try:
+        if not _is_owned_cleanup_backup(backup, target):
+            if not _is_owned_rollback(backup, target) or not _directory_checksum_complete(target):
+                raise RuntimeError(f'Cannot authenticate cleanup of backup {backup}')
+            marker = json.loads((backup / _ROLLBACK_MARKER).read_text(encoding='utf-8'))
+            marker['cleanup_started'] = True
+            _write_rollback_record(backup, marker)
+        _rmtree_with_retry(backup)
+    except OSError as error:
+        logger.warning('Published dataset is complete; old backup cleanup will retry on a later run: %s (%s)',
+                       backup, error)
 
 
 def _directory_checksum_complete(directory: Path) -> bool:
@@ -897,6 +973,7 @@ def _directory_checksum_complete(directory: Path) -> bool:
         actual_canonical = actual_files - {
             '.spherical_eeg_sim.transaction.json',
             _ROLLBACK_MARKER,
+            _ROLLBACK_WRITING,
         }
         if actual_canonical != declared_set:
             return False
@@ -978,6 +1055,11 @@ def _recover_interrupted_publish(target: Path, cfg: Config) -> bool:
             )
         _remove_rollback_marker(target)
 
+    cleanup_backups = [p for p in backups if _is_owned_cleanup_backup(p, target)]
+    for backup in cleanup_backups:
+        _cleanup_published_backup(backup, target)
+    backups = [p for p in backups if p not in cleanup_backups]
+
     unowned_backups = [p for p in backups if not _is_owned_rollback(p, target)]
     if unowned_backups:
         raise RuntimeError(
@@ -997,7 +1079,7 @@ def _recover_interrupted_publish(target: Path, cfg: Config) -> bool:
             if cfg.output.overwrite and _staging_matches_config(staging, cfg):
                 _remove_staging_marker(staging)
                 _replace_with_retry(staging, target)
-                _rmtree_with_retry(backups[0])
+                _cleanup_published_backup(backups[0], target)
                 for incomplete in stagings:
                     if (
                         incomplete != staging
@@ -1006,7 +1088,7 @@ def _recover_interrupted_publish(target: Path, cfg: Config) -> bool:
                     ):
                         _rmtree_with_retry(incomplete)
                 logger.warning(
-                    "Completed an interrupted replacement and removed its valid rollback"
+                    "Completed an interrupted replacement and attempted old backup cleanup"
                 )
                 return True
             _replace_with_retry(backups[0], target)
@@ -1058,7 +1140,7 @@ def _recover_interrupted_publish(target: Path, cfg: Config) -> bool:
                 raise RuntimeError("Recovered target failed checksum verification")
             for backup in backups:
                 if backup.is_dir():
-                    _rmtree_with_retry(backup)
+                    _cleanup_published_backup(backup, target)
         return True
 
     for staging in stagings:
@@ -1079,8 +1161,8 @@ def _recover_interrupted_publish(target: Path, cfg: Config) -> bool:
             )
         for backup in backups:
             if backup.is_dir():
-                _rmtree_with_retry(backup)
-                logger.warning("Removed obsolete publication backup %s", backup)
+                _cleanup_published_backup(backup, target)
+                logger.warning("Attempted cleanup of obsolete publication backup %s", backup)
     return False
 
 
@@ -1112,7 +1194,7 @@ def _commit_staged_directory(staging: Path, target: Path, overwrite: bool) -> No
         _replace_with_retry(backup, target)
         _remove_rollback_marker(target)
         raise
-    _rmtree_with_retry(backup)
+    _cleanup_published_backup(backup, target)
 
 
 def _assert_replaceable_dataset_directory(target: Path) -> None:
@@ -1172,7 +1254,7 @@ _WORKER_CTX: Dict[str, Any] = {}
 
 def _worker_init(cfg, master_seed, split_id, pool_pos_xyz, pool_leadfield,
                  pool_population, pool_global_indices, bg_pool, n_channels, T,
-                 ref_desc, eff_band_probs):
+                 ref_desc, eff_band_probs, patch_containment_radius_mm=None):
     """Initializer run once in each worker process: stash the shared state."""
     _WORKER_CTX.update(
         cfg=cfg, master_seed=master_seed, split_id=split_id,
@@ -1180,6 +1262,7 @@ def _worker_init(cfg, master_seed, split_id, pool_pos_xyz, pool_leadfield,
         pool_population=pool_population, pool_global_indices=pool_global_indices,
         bg_pool=bg_pool, n_channels=n_channels, T=T,
         ref_desc=ref_desc, eff_band_probs=eff_band_probs,
+        patch_containment_radius_mm=patch_containment_radius_mm,
     )
 
 
@@ -1190,7 +1273,7 @@ def _worker_generate(global_index: int):
         c['cfg'], c['master_seed'], c['split_id'], global_index,
         c['pool_pos_xyz'], c['pool_leadfield'], c['pool_population'],
         c['pool_global_indices'], c['bg_pool'], c['n_channels'], c['T'],
-        c['ref_desc'], c['eff_band_probs'],
+        c['ref_desc'], c['eff_band_probs'], c['patch_containment_radius_mm'],
     )
 
 
@@ -1216,6 +1299,7 @@ def _generate_one_sample(
     T: int,
     ref_desc: Dict[str, Any],
     eff_band_probs: Dict[str, float],
+    patch_containment_radius_mm: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any], np.ndarray, Any]:
     """Generate a single sample's EEG and ground truth.
 
@@ -1293,6 +1377,7 @@ def _generate_one_sample(
         batch = generate_patch_samples(
             cfg, 1, pool_pos_xyz, pool_leadfield, pool_population,
             time_courses, rng_mode,
+            containment_radius_mm=patch_containment_radius_mm,
         )
     else:
         raise ValueError(f"Unsupported source_mode: {cfg.source_mode!r}")
@@ -1428,6 +1513,7 @@ def _run_one_split(
     eff_band_probs: Dict[str, float],
     band_info: Dict[str, Any],
     electrodes_block: Dict[str, Any],
+    patch_containment_radius_mm: Optional[np.ndarray] = None,
 ) -> Tuple[Path, np.ndarray, Dict[str, Any], Dict[str, Any]]:
     """Generate one split end-to-end and stream-write it to disk.
 
@@ -1470,17 +1556,20 @@ def _run_one_split(
             initializer=_worker_init,
             initargs=(cfg, master_seed, SPLIT_IDS[split_name], pool_pos_xyz,
                       pool_leadfield, pool_population, pool_global_indices,
-                      bg_pool, n_channels, T, ref_desc, eff_band_probs),
+                      bg_pool, n_channels, T, ref_desc, eff_band_probs,
+                      patch_containment_radius_mm),
         )
         logger.info("    Using %d worker processes for generation", n_workers)
 
     try:
-        return _run_one_split_inner(
-            cfg, split_name, n_samples, output_dir, master_seed,
-            pool_pos_xyz, pool_leadfield, pool_population, pool_global_indices,
-            bg_pool, n_channels, T, chunk_size, executor,
-            ref_desc, eff_band_probs, band_info, electrodes_block,
-        )
+        with ExitStack() as resources:
+            return _run_one_split_inner(
+                cfg, split_name, n_samples, output_dir, master_seed,
+                pool_pos_xyz, pool_leadfield, pool_population, pool_global_indices,
+                bg_pool, n_channels, T, chunk_size, executor,
+                ref_desc, eff_band_probs, band_info, electrodes_block, resources,
+                patch_containment_radius_mm,
+            )
     finally:
         if executor is not None:
             executor.shutdown(wait=True)
@@ -1505,6 +1594,8 @@ def _run_one_split_inner(
     eff_band_probs: Dict[str, float],
     band_info: Dict[str, Any],
     electrodes_block: Dict[str, Any],
+    resources: ExitStack,
+    patch_containment_radius_mm: Optional[np.ndarray] = None,
 ) -> Tuple[Path, np.ndarray, Dict[str, Any], Dict[str, Any]]:
     """Body of _run_one_split, optionally using a process pool ``executor``."""
     writer = open_split_writer(
@@ -1517,6 +1608,8 @@ def _run_one_split_inner(
         electrodes=electrodes_block,
         eeg_dtype=cfg.output.dtype,
     )
+    if isinstance(writer, ChunkedHDF5Writer):
+        resources.enter_context(writer)
     all_snr_db = np.empty(n_samples, dtype=np.float64)
     peak_uV = np.empty(n_samples, dtype=np.float64)
     diagnostic_n = min(cfg.output.diagnostic_sample_count, n_samples)
@@ -1568,7 +1661,7 @@ def _run_one_split_inner(
                     cfg, master_seed, SPLIT_IDS[split_name], gi,
                     pool_pos_xyz, pool_leadfield, pool_population,
                     pool_global_indices, bg_pool, n_channels, T,
-                    ref_desc, eff_band_probs,
+                    ref_desc, eff_band_probs, patch_containment_radius_mm,
                 )
                 for gi in indices
             )
@@ -1655,6 +1748,8 @@ def _run_one_split_inner(
         'absolute_noise_rms_uV': float(cfg.noise.absolute_noise_rms_uV),
         'band_resolvability': band_info,
     }
+    if cfg.split.policy != 'position':
+        metadata['split_policy'] = cfg.split.policy
     path = writer.finalize(metadata)
     logger.info("    Wrote %s (%.1f MB)", path.name, path.stat().st_size / 1e6)
 
@@ -1694,63 +1789,32 @@ def _gather_pool_indices(pool_global: np.ndarray, pool_local_idx: np.ndarray) ->
     return out
 
 
-def _read_serialized_position_indices(path: Path, source_mode: str) -> np.ndarray:
-    """Read the global source-pool indices actually serialized in one split."""
+def _read_serialized_ground_truth(path: Path, keys: list[str]) -> dict[str, np.ndarray]:
+    """Read selected dense truth fields or the values of ragged fields."""
     path = Path(path)
-    keys = ['position_pool_idx']
-    if source_mode == 'patch':
-        keys.append('patch_active_position_idx')
-
-    arrays = []
-    if path.suffix == '.h5':
+    arrays: dict[str, np.ndarray] = {}
+    if path.suffix in ('.h5', '.mat'):
         import h5py
         with h5py.File(path, 'r') as f:
             for key in keys:
                 node = f[f'ground_truth/{key}']
                 if isinstance(node, h5py.Group):
-                    arrays.append(np.asarray(node['values'][:]))
-                else:
-                    arrays.append(np.asarray(node[:]))
+                    node = node['values']
+                values = np.asarray(node[:])
+                # The MATLAB v7.3 writer stores the array axes reversed.
+                arrays[key] = values.T if path.suffix == '.mat' else values
     elif path.suffix == '.npz':
         with np.load(path, allow_pickle=False) as payload:
             for key in keys:
                 dense_key = f'gt_{key}'
                 ragged_key = f'gt_{key}_values'
-                arrays.append(np.asarray(
+                arrays[key] = np.asarray(
                     payload[ragged_key] if ragged_key in payload else payload[dense_key]
-                ))
-    elif path.suffix == '.mat':
-        try:
-            hdf5storage = import_hdf5storage()
-        except ImportError as exc:  # pragma: no cover - writer already needs it
-            raise ImportError(
-                "Reading MATLAB validation data requires hdf5storage"
-            ) from exc
-        ground_truth = hdf5storage.loadmat(path)['ground_truth']
-        if isinstance(ground_truth, dict):
-            for key in keys:
-                value = ground_truth[key]
-                if isinstance(value, dict):
-                    value = value['values']
-                elif isinstance(value, np.ndarray) and value.dtype.names:
-                    value = value.reshape(-1)[0]['values']
-                arrays.append(np.asarray(value))
-        elif isinstance(ground_truth, np.ndarray) and ground_truth.dtype.names:
-            record = ground_truth.reshape(-1)[0]
-            for key in keys:
-                value = record[key]
-                if isinstance(value, np.ndarray) and value.dtype.names:
-                    value = value.reshape(-1)[0]['values']
-                arrays.append(np.asarray(value))
-        else:  # pragma: no cover - incompatible third-party reader behavior
-            raise ValueError(
-                f"Could not decode ground_truth structure from {path}"
-            )
+                )
     else:  # pragma: no cover - pipeline controls output suffixes
         raise ValueError(f"Unsupported split-file suffix: {path.suffix!r}")
 
-    flattened = [array.astype(np.int64, copy=False).ravel() for array in arrays]
-    return np.concatenate(flattened)
+    return arrays
 
 
 def _signal_topographic_concentration(sig_only: np.ndarray) -> np.ndarray:

@@ -29,11 +29,13 @@ output_eeg_dataset/
 output_quickstart/
 output_*/
 *.runtime.json
+.*.generation.lock
 *.h5
 *.npz
 *.mat
 
 # Results written by the validation scripts outside validation_results/
+/validation_runs/
 inverse_recovery_metrics.csv
 
 # Keep the archived validation artifacts that ship with the release.

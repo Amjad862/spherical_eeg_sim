@@ -58,6 +58,12 @@ benchmark generator. Please follow them in any contribution.
 
 ## Tests
 
+The reference v1.1.0 run on Windows with Python 3.12 includes **356 test
+functions covering 1,185 cases**. Run `python -m pytest --collect-only -q`
+to inspect your selection. Pytest prints the function and case counts after
+collection and reports each case outcome separately when the suite runs.
+Optional dependencies and version-specific checks can affect collection or skips.
+
 Add tests for any new behaviour under `tests/`. Physics changes should be checked
 against an independent reference (e.g. the forward model against MNE-Python's
 independent sphere solver, as in `scripts/validate_inverse_mne.py`) rather than

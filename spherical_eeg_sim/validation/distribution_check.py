@@ -6,7 +6,7 @@ Verifies that:
   - Orientation norms and low-order moments match the configured mode
   - Positions and magnitudes remain inside configured bounds
   - Target-SNR values remain inside the configured range
-  - Train/val/test position sets are disjoint (no leakage)
+  - Serialized positions satisfy the selected split eligibility policy
   - Clean scalp-potential summaries are finite and nonzero
 
 Returns a structured DistributionValidationResult that can be saved to JSON
@@ -141,6 +141,7 @@ def validate_distributions(
     noise_model: str = 'snr_target',
     eeg_signal: Optional[np.ndarray] = None,   # (B, N, T)
     peak_uV: Optional[np.ndarray] = None,      # (B,) precomputed peak |V| in uV
+    split_policy: str = 'position',
 ) -> DistributionValidationResult:
     """Run all distribution checks on a generated dataset.
 
@@ -397,8 +398,34 @@ def validate_distributions(
             },
         ))
 
+    # A patch records the signed radial normal of its centre. Under the region
+    # policy the centres of a split cover only its own sectors, so their
+    # directions are not uniform over the sphere and the isotropy moments do
+    # not apply; the radial alignment itself is checked instead.
+    region_patch = source_mode == 'patch' and split_policy == 'region'
+    if orientations_world is not None and region_patch and flat_orient.size > 0:
+        centre_unit = positions_xyz / np.linalg.norm(positions_xyz, axis=1, keepdims=True)
+        alignment = np.abs(np.sum(flat_orient * centre_unit, axis=1))
+        radial_error = float(np.max(np.abs(alignment - 1.0)))
+        checks.append(CheckResult(
+            name='patch_orientation_radial',
+            passed=bool(radial_error < 1e-12),
+            detail=(
+                f"Maximum | |orientation . centre normal| - 1 | = {radial_error:.3e} "
+                f"over {flat_orient.shape[0]} patches"
+            ),
+            statistics={
+                'max_abs_alignment_error': radial_error,
+                'n': int(flat_orient.shape[0]),
+                'scope': (
+                    'region policy: patch centres cover only the sectors of their split, '
+                    'so the uniform-sphere moment check is not applicable'
+                ),
+            },
+        ))
+
     if (orientations_world is not None and orientation_mode == 'uniform_s2'
-            and flat_orient.size > 0):
+            and flat_orient.size > 0 and not region_patch):
         n = flat_orient.shape[0]
         means = flat_orient.mean(axis=0)
         stds = flat_orient.std(axis=0)
@@ -460,12 +487,13 @@ def validate_distributions(
             },
         ))
 
-    # ----- Check: position-level split disjointness (no leakage) -----
+    # ----- Check: exact position-index disjointness -----
     # Assigned pools can be checked independently. When serialized indices are
     # supplied, the pipeline also audits the indices read back from output
     # files instead of only rechecking the split constructor.
     if (
-        train_position_indices is not None
+        split_policy != 'shared'
+        and train_position_indices is not None
         and val_position_indices is not None
         and test_position_indices is not None
     ):
@@ -529,7 +557,7 @@ def validate_distributions(
         nonempty = all(written[name] for name in expected_names)
         passed = (
             nonempty
-            and all(len(values) == 0 for values in overlaps.values())
+            and (split_policy == 'shared' or all(not values for values in overlaps.values()))
             and all(len(values) == 0 for values in outside.values())
         )
         checks.append(CheckResult(

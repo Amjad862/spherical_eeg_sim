@@ -4,9 +4,9 @@ Produces three reusable figures:
 
   * ``pipeline_schematic.pdf`` / ``.png`` -- the end-to-end generation pipeline
     as a labelled block diagram (data-independent).
-  * ``topographies.png`` -- representative average-referenced scalp topographies
+  * ``topographies.pdf`` / ``.png`` -- representative average-referenced scalp topographies
     for equal radial dipoles at superficial, middle, and deep model radii.
-  * ``distributions.png`` -- a compact multi-panel summary of a generated
+  * ``distributions.pdf`` / ``.png`` -- a compact multi-panel summary of a generated
     dataset: source radial distribution by population, dipole-magnitude
     distribution, emergent-SNR distribution, orientation uniformity, frequency-
     band counts, and the train/val/test radial separation (position-level
@@ -17,6 +17,7 @@ are reproducible. matplotlib is required.
 
 Usage
 -----
+    python scripts/make_validation_figures.py
     python scripts/make_validation_figures.py --outdir figures
 """
 
@@ -30,6 +31,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts._validation_outputs import (
+    ValidationOutputs, add_output_options, check_work_directory,
+)
 from spherical_eeg_sim import Config, run_pipeline
 from spherical_eeg_sim.core.electrodes import load_electrodes
 from spherical_eeg_sim.core.forward import (
@@ -52,20 +56,22 @@ def fig_pipeline_schematic(outdir):
     from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
     steps = [
-        "Config\n(dataclasses)",
+        "Configuration",
         "Electrode\nmontage",
-        "Four-sphere\nforward model\n(transfer coeffs)",
-        "Source position\npools\n(cortical / subcortical)",
-        "Position-level\ntrain / val / test\nsplit",
-        "Per-sample seeds\n(sample, split, index)",
-        "Orientation +\nmagnitude +\ntime course",
+        "Four-sphere\nforward model",
+        "Source position\npools",
+        "Split policy:\nexact, region\nor shared",
+        "Per-window\nrandom streams",
+        "Orientation,\nmagnitude,\ntime course",
         "Lead-field\nprojection",
-        "Three-component\nnoise + SNR /\nabsolute floor",
-        "Reference +\nground truth",
-        "HDF5 / NPZ / MAT\n+ metadata",
-        "Validation +\ndiagnostics",
+        "Noise mixture\nand scaling",
+        "Reference and\nground truth",
+        "HDF5, NPZ or\nMATLAB output",
+        "Validation and\npublication",
     ]
-    fig, ax = plt.subplots(figsize=(12, 5.2))
+    # Drawn at the width of the journal text block so that the 8 pt labels
+    # print at 8 pt.
+    fig, ax = plt.subplots(figsize=(6.3, 3.0))
     ax.set_xlim(0, 4)
     ax.set_ylim(0, 3)
     ax.axis('off')
@@ -78,15 +84,15 @@ def fig_pipeline_schematic(outdir):
         for c in row_cols:
             positions.append((c + 0.5, nrow - 0.5 - r))
 
-    boxw, boxh = 0.86, 0.66
+    boxw, boxh = 0.84, 0.70
     colors = ['#e8f0fa'] * len(steps)
     for (cx, cy), label, col in zip(positions, steps, colors):
         box = FancyBboxPatch(
             (cx - boxw / 2, cy - boxh / 2), boxw, boxh,
             boxstyle="round,pad=0.02,rounding_size=0.06",
-            linewidth=1.2, edgecolor='#33517a', facecolor=col)
+            linewidth=0.9, edgecolor='#33517a', facecolor=col)
         ax.add_patch(box)
-        ax.text(cx, cy, label, ha='center', va='center', fontsize=8.2)
+        ax.text(cx, cy, label, ha='center', va='center', fontsize=8.0, linespacing=1.15)
 
     for i in range(len(positions) - 1):
         x0, y0 = positions[i]
@@ -102,26 +108,21 @@ def fig_pipeline_schematic(outdir):
             end = (x1, y1 - direction * boxh / 2.0)
         arr = FancyArrowPatch(
             start, end,
-            arrowstyle='-|>', mutation_scale=12, linewidth=1.1,
+            arrowstyle='-|>', mutation_scale=8, linewidth=0.9,
             color='#33517a',
-            shrinkA=2, shrinkB=2,
+            shrinkA=1.5, shrinkB=1.5,
             connectionstyle="arc3,rad=0.0")
         ax.add_patch(arr)
 
-    ax.set_title("spherical_eeg_sim generation pipeline", fontsize=12, pad=8)
-    fig.tight_layout()
-    for ext in ('pdf', 'png'):
-        output_path = Path(outdir) / f'pipeline_schematic.{ext}'
-        if ext == 'pdf':
-            fig.savefig(
-                output_path,
-                dpi=200,
-                bbox_inches='tight',
-                metadata={'CreationDate': None, 'ModDate': None},
-            )
-        else:
-            fig.savefig(output_path, dpi=200, bbox_inches='tight')
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+    _save_figure(fig, outdir, 'pipeline_schematic', dpi=600)
     plt.close(fig)
+
+
+def _save_figure(fig, outdir, stem, dpi):
+    """Write a raster and a vector version with reproducible PDF metadata."""
+    fig.savefig(Path(outdir) / f'{stem}.png', dpi=dpi)
+    fig.savefig(Path(outdir) / f'{stem}.pdf', metadata={'CreationDate': None, 'ModDate': None})
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +150,7 @@ def fig_topographies(outdir):
 
     # One representative radial dipole at three depths (same angular position).
     depths_mm = [78.0, 60.0, 40.0]
-    labels = ['superficial (78 mm)', 'mid (60 mm)', 'deep (40 mm)']
+    labels = ['Superficial (78 mm)', 'Middle (60 mm)', 'Deep (40 mm)']
     theta0, phi0 = 0.6, 0.4
     ori_world = np.array([np.sin(theta0) * np.cos(phi0),
                           np.sin(theta0) * np.sin(phi0),
@@ -170,23 +171,21 @@ def fig_topographies(outdir):
 
     vmax = max(float(np.max(np.abs(v))) for v in maps_uV)
     levels = np.linspace(-vmax, vmax, 15)
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4.4), constrained_layout=True)
+    # Journal text width; the caption carries the title.
+    fig, axes = plt.subplots(1, 3, figsize=(6.3, 2.3), constrained_layout=True)
     tc = None
     for ax, V_uV, lab in zip(axes, maps_uV, labels):
         tc = ax.tricontourf(ex, ey, V_uV, levels=levels, cmap='RdBu_r',
                             extend='both')
-        ax.scatter(ex, ey, s=6, c='k', alpha=0.35)
+        ax.scatter(ex, ey, s=2.5, c='k', alpha=0.35, linewidths=0)
         ax.set_aspect('equal')
         ax.axis('off')
-        ax.set_title(lab, fontsize=10)
+        ax.set_title(lab, fontsize=8.5)
     assert tc is not None
-    fig.colorbar(
-        tc, ax=axes.tolist(), fraction=0.035, pad=0.03,
-        label='potential (µV)',
-    )
-    fig.suptitle("Average-referenced scalp maps for a 30 nA·m radial dipole",
-                 fontsize=12)
-    fig.savefig(Path(outdir) / 'topographies.png', dpi=200, bbox_inches='tight')
+    bar = fig.colorbar(tc, ax=axes.tolist(), fraction=0.035, pad=0.03)
+    bar.set_label('Potential (µV)', fontsize=8.5)
+    bar.ax.tick_params(labelsize=8)
+    _save_figure(fig, outdir, 'topographies', dpi=600)
     plt.close(fig)
 
 
@@ -194,7 +193,7 @@ def fig_topographies(outdir):
 # Figure 3: dataset distributions
 # ---------------------------------------------------------------------------
 
-def fig_distributions(outdir, workdir):
+def fig_distributions(outdir, workdir, *, overwrite=False):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -211,7 +210,7 @@ def fig_distributions(outdir, workdir):
     cfg.master_seed = 862
     cfg.output.diagnostic_plots = False
     cfg.output_dir = str(Path(workdir) / 'figdata')
-    cfg.output.overwrite = True
+    cfg.output.overwrite = overwrite
     run_pipeline(cfg, log_level=40)
 
     d = Path(workdir) / 'figdata'
@@ -222,53 +221,49 @@ def fig_distributions(outdir, workdir):
                      'orientations_world', 'band_idx', 'population')}
     tr = read('train'); va = read('val'); te = read('test')
 
-    fig, ax = plt.subplots(2, 3, figsize=(13, 7.5))
+    # Drawn at the printed width of the text block; no text is smaller than 8 pt.
+    plt.rcParams.update({'font.size': 8.5, 'axes.titlesize': 9, 'axes.labelsize': 8.5,
+                         'xtick.labelsize': 8, 'ytick.labelsize': 8, 'legend.fontsize': 8})
+    fig, axes = plt.subplots(3, 2, figsize=(6.3, 5.2), layout='constrained')
+    ax = axes.ravel()
 
     # (a) radial distribution by population
     r = np.linalg.norm(tr['positions_xyz'], axis=1) * 1000
     pop = tr['population']
-    ax[0, 0].hist(r[pop == 0], bins=40, alpha=0.7, label='cortical', color='#4477aa')
-    ax[0, 0].hist(r[pop == 1], bins=40, alpha=0.7, label='subcortical', color='#cc6677')
-    ax[0, 0].set_xlabel('source radius (mm)'); ax[0, 0].set_ylabel('count')
-    ax[0, 0].set_title('(a) source radial distribution'); ax[0, 0].legend()
+    ax[0].hist(r[pop == 0], bins=40, alpha=0.7, label='cortical', color='#4477aa')
+    ax[0].hist(r[pop == 1], bins=40, alpha=0.7, label='subcortical', color='#cc6677')
+    ax[0].set(xlabel='Source radius (mm)', ylabel='Count', title='(a) Source radius')
+    ax[0].legend()
 
     # (b) magnitude distribution (log)
-    ax[0, 1].hist(np.log10(tr['magnitudes_nAm']), bins=40, color='#228833')
-    ax[0, 1].set_xlabel('log10 dipole magnitude (nA·m)'); ax[0, 1].set_ylabel('count')
-    ax[0, 1].set_title('(b) magnitude (log-uniform)')
+    ax[1].hist(np.log10(tr['magnitudes_nAm']), bins=40, color='#228833')
+    ax[1].set(xlabel='log₁₀ dipole magnitude (nA·m)', ylabel='Count', title='(b) Dipole magnitude')
 
     # (c) emergent SNR
-    ax[0, 2].hist(tr['snr_db'], bins=40, color='#aa3377')
-    ax[0, 2].set_xlabel('emergent SNR (dB)'); ax[0, 2].set_ylabel('count')
-    ax[0, 2].set_title('(c) emergent SNR (absolute floor)')
+    ax[2].hist(tr['snr_db'], bins=40, color='#aa3377')
+    ax[2].set(xlabel='SNR (dB)', ylabel='Count', title='(c) Emergent SNR')
 
     # (d) orientation z-component (uniform on S2 -> Unif[-1,1])
-    ax[1, 0].hist(tr['orientations_world'][:, 2], bins=40, color='#66ccee')
-    ax[1, 0].set_xlabel('orientation z-component'); ax[1, 0].set_ylabel('count')
-    ax[1, 0].set_title('(d) orientation uniformity (uniform S²)')
+    ax[3].hist(tr['orientations_world'][:, 2], bins=40, color='#66ccee')
+    ax[3].set(xlabel='Orientation z-component', ylabel='Count', title='(d) Dipole orientation')
 
     # (e) frequency-band counts
     bands = np.bincount(tr['band_idx'], minlength=5)
     names = ['delta', 'theta', 'alpha', 'beta', 'gamma']
-    ax[1, 1].bar(range(len(bands)), bands, color='#ee7733')
-    ax[1, 1].set_xticks(range(len(names))); ax[1, 1].set_xticklabels(names, rotation=30)
-    ax[1, 1].set_ylabel('count'); ax[1, 1].set_title('(e) frequency band (window-resolvable)')
+    ax[4].bar(range(len(bands)), bands, color='#ee7733')
+    ax[4].set_xticks(range(len(names)), names)
+    ax[4].set(ylabel='Count', title='(e) Frequency band')
 
     # (f) train/val/test radial separation (position-level split)
     for split, dd, col in (('train', tr, '#4477aa'), ('val', va, '#228833'),
                            ('test', te, '#cc6677')):
         rr = np.linalg.norm(dd['positions_xyz'], axis=1) * 1000
-        ax[1, 2].hist(rr, bins=40, histtype='step', density=True, label=split, color=col)
-    ax[1, 2].set_xlabel('source radius (mm)'); ax[1, 2].set_ylabel('density')
-    ax[1, 2].set_title('(f) split radial coverage'); ax[1, 2].legend()
-
-    fig.suptitle(
-        "Generated-dataset distributions (deterministic reduced-size run)",
-        fontsize=13,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-    fig.savefig(Path(outdir) / 'distributions.png', dpi=200, bbox_inches='tight')
+        ax[5].hist(rr, bins=40, histtype='step', density=True, label=split, color=col)
+    ax[5].set(xlabel='Source radius (mm)', ylabel='Density', title='(f) Radius by split')
+    ax[5].legend()
+    _save_figure(fig, outdir, 'distributions', dpi=600)
     plt.close(fig)
+    plt.rcdefaults()
     return {
         'train_snr_db': {
             'minimum': float(np.min(tr['snr_db'])),
@@ -287,45 +282,66 @@ def fig_distributions(outdir, workdir):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--outdir', type=str, default='figures')
+    ap.add_argument('--outdir', type=str)
     ap.add_argument(
         '--workdir', type=str, default=None,
         help='optional retained work directory; otherwise a temporary directory is used',
     )
+    add_output_options(ap)
     args = ap.parse_args()
-    Path(args.outdir).mkdir(parents=True, exist_ok=True)
-
-    print("Figure 1/3: pipeline schematic ...")
-    fig_pipeline_schematic(args.outdir)
-    print("Figure 2/3: representative topographies ...")
-    fig_topographies(args.outdir)
-    print("Figure 3/3: dataset distributions ...")
-    if args.workdir is None:
-        with tempfile.TemporaryDirectory(prefix='spherical_eeg_sim_figures_') as workdir:
-            distribution_statistics = fig_distributions(args.outdir, workdir)
-    else:
-        Path(args.workdir).mkdir(parents=True, exist_ok=True)
-        distribution_statistics = fig_distributions(args.outdir, args.workdir)
-    outdir = Path(args.outdir)
     figure_files = (
         'pipeline_schematic.pdf',
         'pipeline_schematic.png',
+        'topographies.pdf',
         'topographies.png',
+        'distributions.pdf',
         'distributions.png',
     )
+    manifest_name = 'publication_figures.json'
+    names = (*figure_files, manifest_name)
+    outputs = ValidationOutputs(
+        ap, args, name='figures',
+        canonical={name: name for name in names},
+        explicit={
+            name: Path(args.outdir) / name for name in names
+        } if args.outdir else None,
+    )
+    workdir = None
+    if args.workdir:
+        workdir = check_work_directory(
+            ap, Path(args.workdir) / 'figdata', overwrite=args.overwrite,
+            result_paths=outputs.paths.values(),
+        ).parent
+
+    with outputs.stage() as paths:
+        outdir = paths[manifest_name].parent
+        print("Figure 1/3: pipeline schematic ...")
+        fig_pipeline_schematic(outdir)
+        print("Figure 2/3: representative topographies ...")
+        fig_topographies(outdir)
+        print("Figure 3/3: dataset distributions ...")
+        if workdir is None:
+            with tempfile.TemporaryDirectory(prefix='.figure-data-', dir=outdir.parent) as temporary:
+                distribution_statistics = fig_distributions(outdir, temporary)
+        else:
+            distribution_statistics = fig_distributions(outdir, workdir, overwrite=args.overwrite)
+        _write_summary(paths, figure_files, manifest_name, distribution_statistics)
+    print(f"Figures written to {outputs.paths[manifest_name].parent}")
+
+
+def _write_summary(paths, figure_files, manifest_name, distribution_statistics):
     manifest = {
         'software_environment': environment_snapshot(),
         'distribution_statistics': distribution_statistics,
         'files': {
-            name: hashlib.sha256((outdir / name).read_bytes()).hexdigest()
+            name: hashlib.sha256(paths[name].read_bytes()).hexdigest()
             for name in figure_files
         },
     }
-    manifest_path = outdir / 'publication_figures.json'
+    manifest_path = paths[manifest_name]
     with manifest_path.open('w', encoding='utf-8', newline='\n') as f:
         json.dump(manifest, f, indent=2, sort_keys=True)
         f.write('\n')
-    print(f"Figures written to {args.outdir}/")
 
 
 if __name__ == '__main__':

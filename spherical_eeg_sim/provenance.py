@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import sys
+from pathlib import Path
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from typing import Dict, Iterable
 
@@ -24,17 +25,26 @@ CORE_DISTRIBUTIONS = (
 def software_versions(
     extra_distributions: Iterable[str] = (),
 ) -> Dict[str, str]:
-    """Return installed versions relevant to numerical artifacts."""
+    """Return the executed package version and relevant dependency versions."""
     versions: Dict[str, str] = {}
     names = dict.fromkeys((*CORE_DISTRIBUTIONS, *extra_distributions))
     for distribution in names:
+        if distribution == "spherical_eeg_sim":
+            from . import __version__
+
+            try:
+                installed = distribution_version(distribution)
+            except PackageNotFoundError:
+                versions[distribution] = f"{__version__}+source"
+            else:
+                versions[distribution] = __version__
+                if installed != __version__:
+                    versions["spherical_eeg_sim_installed_distribution"] = installed
+            continue
         try:
             versions[distribution] = distribution_version(distribution)
         except PackageNotFoundError:
-            if distribution == "spherical_eeg_sim":
-                from . import __version__
-
-                versions[distribution] = f"{__version__}+source"
+            pass
 
     try:
         import h5py
@@ -47,9 +57,10 @@ def software_versions(
 
 def environment_snapshot(
     extra_distributions: Iterable[str] = (),
+    *, include_paths: bool = False,
 ) -> Dict[str, object]:
     """Return deterministic interpreter, platform, and package provenance."""
-    return {
+    result: Dict[str, object] = {
         "package": "spherical_eeg_sim",
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
@@ -57,3 +68,6 @@ def environment_snapshot(
         "byteorder": sys.byteorder,
         "software_versions": software_versions(extra_distributions),
     }
+    if include_paths:
+        result["imported_package_path"] = str(Path(__file__).resolve().parent)
+    return result

@@ -3,8 +3,10 @@
 SphericalEEGSim generates controlled synthetic scalp-EEG datasets for training
 and benchmarking electrical source-imaging methods. It uses the analytic
 concentric-shell series of de Munck and Peters, supports point, multi-point,
-and cortical-patch sources, and splits the source-position pool before samples
-are drawn so positions cannot leak between training, validation, and test data.
+and cortical-patch sources. By default, it assigns disjoint sets of exact
+source-pool positions to training, validation, and test before drawing samples.
+A region policy instead holds out buffered spatial sectors, and in patch mode
+keeps every patch footprint inside its own split.
 
 The package is a controlled spherical benchmark generator, not a substitute
 for subject-specific BEM/FEM modeling or real-data validation.
@@ -21,12 +23,16 @@ for subject-specific BEM/FEM modeling or real-data validation.
 - Two noise conventions: a physical absolute noise floor or per-sample target
   SNR, plus an independent optional unit-RMS output transform with a stored
   voltage scale.
+- Three split policies: disjoint exact positions (default), buffered region
+  holdout for every source mode, and explicitly shared positions.
 - Sixteen bundled montage files plus custom electrode CSV input.
 - HDF5, deterministic NPZ, and genuine MATLAB v7.3 output.
 - Optional referenced lead-field, electrode-graph, and MNE-Python export.
-- Byte-identical canonical output across generation chunk sizes and worker
-  counts for a fixed scientific configuration and seed in the tested software
-  environment; cross-platform identity must be verified rather than assumed.
+- Output that does not depend on the generation chunk size or the number of
+  worker processes: for a fixed scientific configuration and seed the files are
+  byte-identical within one software environment (tested with HDF5 1.14.5 and
+  2.0.0). Identity across platforms or library versions must be verified
+  rather than assumed.
 
 Scientific defaults and their evidence are catalogued in
 [`docs/parameters.md`](docs/parameters.md); complete BibTeX metadata is in
@@ -44,8 +50,10 @@ pip install -e ".[mat]"        # MATLAB v7.3 output
 pip install -e ".[all]"        # all optional and test dependencies
 ```
 
-Python 3.9 or later is required. The core dependencies are NumPy, SciPy, and
+Python 3.10 or later is required. The core dependencies are NumPy, SciPy, and
 h5py. MATLAB output additionally requires `hdf5storage`.
+After pulling a new version into an editable checkout, reinstall with
+`pip install -e ".[all]"` to refresh its distribution metadata and dependencies.
 
 ## Quick start
 
@@ -68,6 +76,11 @@ an incomplete staging tree; the marker is removed before publication. A
 checksum-complete tree is preserved for recovery after a transient rename
 failure.
 
+Two runs can write to different directories at the same time. A second run
+aimed at an active output directory stops before recovery. The empty sibling
+file `.<dataset-name>.generation.lock` can remain after the run finishes. The
+operating system releases the lock when the generating process exits.
+
 For a small smoke test:
 
 ```bash
@@ -78,21 +91,28 @@ Installing the package also provides a command-line entry point that wraps the
 same pipeline:
 
 ```bash
-spherical-eeg-sim --quickstart --output-dir my_dataset
-spherical-eeg-sim --config my_config.json
+spherical-eeg-sim --quickstart --output-dir my_cli_dataset --save-config my_cli_config.json
+spherical-eeg-sim --config my_cli_config.json --output-dir my_configured_dataset
 spherical-eeg-sim --source-mode patch --n-train 50000 --save-config used.json
 ```
 
-Run `spherical-eeg-sim --help` for the full option list, or invoke the module
-directly as `python -m spherical_eeg_sim.cli`. The Python API is the better
-choice when the run summary is needed programmatically.
+Run `spherical-eeg-sim --help` or `python -m spherical_eeg_sim.cli --help` for
+the full option list. The command starts a run only when its size has been
+chosen: by `--quickstart`, by `--config`, by one of `--n-train`, `--n-val` and
+`--n-test`, or by `--default-run` for the full default dataset. Called without
+any of these it prints the size of the default dataset and stops. Every run
+prints its planned size first. The Python API returns the run summary for
+programmatic use.
 
-The full default configuration requests 300,000/30,000/30,000 samples. These
-are declared benchmark-capacity settings, not a literature-prescribed sample
-size or a statistical power calculation; `docs/parameters.md` gives the cited
-rationale and scope. Runtime and storage depend strongly on montage size,
-compression, hardware, and enabled auxiliary outputs; the package does not
-promise an estimated time or size in place of a measured run.
+The full default configuration requests 300,000/30,000/30,000 samples, about
+18.5 GiB of float64 EEG on the default 69-channel montage. These are declared
+benchmark-capacity settings, not a literature-prescribed sample size or a
+statistical power calculation; `docs/parameters.md` gives the cited rationale
+and scope. Runtime and storage depend on montage size, compression, hardware,
+and enabled auxiliary outputs. Measured times, memory and sizes for
+representative runs, including the full default run, are in
+`validation_results/generation_benchmark.json` and are described under
+[Generation benchmark](#generation-benchmark).
 
 ## Source modes
 
@@ -108,15 +128,85 @@ requested minimum Euclidean separation. Exploratory runs can explicitly choose
 `multi_point.time_coupling_values` can sample coupling per window and records the
 realized value in `ground_truth/time_coupling`.
 
-`cfg.source_mode = "patch"` generates a radially oriented source patch on the
+`cfg.source_mode = "patch"` generates one radially oriented source patch per window on the
 spherical cortical shell. Membership is based on great-circle surface distance.
 The default profile is a Gaussian with `sigma = diameter/4` truncated at the
 patch radius; it has a nonzero limiting boundary weight before the hard cutoff.
 The exact active source-pool indices and signed radial dipole moments are stored
 without padding in CSR row encoding. `source_pool.*` maps those indices to
-physical coordinates and split assignments. Patch mode allocates equal-size
-cortical support meshes to train, validation, and test so support density does
-not vary with the requested sample counts.
+physical coordinates and split assignments. Under the default split policy,
+patch mode allocates equal-size cortical support meshes to train, validation,
+and test so support density does not vary with the requested sample counts.
+
+## Source split policies
+
+| `cfg.split.policy` | Source locations eligible for each split |
+|---|---|
+| `position` (default) | Disjoint exact position indices. Near neighbours and overlapping patch footprints can still occur across splits. |
+| `region` | Separate rotated spherical sectors with a clearance buffer, for every source mode. Set `region_count`, `buffer_mm`, and `region_rotation_seed`. Validation stays clear of test, and training stays clear of both. In patch mode a patch is centred only where its whole footprint stays inside its own split region. |
+| `shared` | Point and multi-point modes draw independently seeded windows. Set `shared_position_fraction` in `(0, 1]` to share part or all of the common finite position pool. |
+
+Use `plan_position_split(cfg)` from `spherical_eeg_sim` to inspect positions,
+populations, and eligible indices without computing a lead field or EEG.
+The generated `validation_report.json` gives nearest-neighbour distances for
+eligible and used positions and, for `shared`, the observed fraction of query
+windows with a position also used in the reference split. Sharing a location
+does not reuse the EEG window. The source-position and background-projection
+pools use the same seeds across policies.
+
+Use `position` to measure interpolation to unseen locations in the same sampled
+domain, `region` to test spatial separation, and `shared` for new windows at
+known locations. The region layout is rotated by its declared seed. Sector
+directions are ordered by height, and one test sector is drawn per height group.
+The remaining sectors are regrouped by height for validation, with one sector
+drawn per group. All other sectors form training before the clearance buffer
+is applied. The package checks clearance and population
+availability. Additional study-specific coverage thresholds are enforced by
+`scripts/run_split_study.py`.
+
+`shared_position_fraction` is a fraction of the entire source pool, rather than
+the test pool or test windows. A value of 0.01 produced 95 shared eligible
+locations, 81 used by both training and test, and 231 of 3,000 test windows
+(7.7%) at observed training locations in the recorded seed-862 demonstration.
+With a fraction of 1.0, a full redraw of test locations from the training
+pool, 2,618 of 3,000 test windows (87.3%) fell on a training location in the
+same configuration, which is why disjoint positions are the default.
+The realized window reuse depends on split sizes and sampling. Read
+`observed_reuse` in the validation report for each dataset. Shared source-pool
+rows carry split code `-2` and are eligible in all splits. Keep these rows when
+selecting a split's eligible pool.
+
+Patch mode supports `position` and `region`. Each window contains one patch.
+
+Under `position`, each split receives one third of the cortical pool as its
+support mesh. The three meshes interleave over the whole sphere, so patches
+from different splits can cover the same cortex: this is a within-distribution
+benchmark for patches.
+
+Under `region`, each split keeps every pool position inside its own sectors,
+and a patch is admitted only where its whole footprint lies inside those
+sectors and contains no position of another split or of the buffer. The
+footprint is the cap of directions within `diameter / 2` of the centre,
+measured on the centre's own radius. Near sector corners the planner uses
+a conservative bound, so it can exclude some centres whose footprints would
+fit. The diameter is drawn first and the centre is then drawn uniformly from
+the admitted positions, so every split keeps the configured diameter distribution. Footprints of
+different splits are disjoint by construction, and their active dipoles are at
+least `buffer_mm` apart. `plan_position_split(cfg)` raises, before any data are
+generated, if the planner admits no centre for the largest patch in a split. Use
+fewer, larger sectors (six to eight suit the default 10 to 60 mm diameters), a
+smaller buffer, or a smaller maximum diameter. Region meshes keep the full
+pool density, so a region dataset needs one third of the pool size of a
+default-policy dataset for the same support density.
+
+The validation report of every patch dataset gives, for each split pair, the
+nearest centre, the highest spherical-cap intersection over union of the
+footprints and, when no footprints overlap, the smallest gap between them.
+For region datasets it also verifies from the written files that no patch was
+clipped, and reports how many positions the planner admits for the smallest
+and largest diameters. Set `cfg.patch.report_overlap = False` to omit the overlap
+diagnostic. The report labels any deterministic query subset used to limit
+work for large custom datasets.
 
 ## Noise and physical scale
 
@@ -249,7 +339,8 @@ writing, so HDF5 is the appropriate backend for default-scale generation.
 ## Reproducibility contract
 
 Setup stages use deterministic substreams. `position_seed` controls the source
-pool, position split, and background-projection pool; `sample_seed` controls
+pool, background-projection pool, and the `position` and `shared` assignments.
+The `region` assignment uses `region_rotation_seed`. `sample_seed` controls
 per-window source, signal, and noise streams. Either can be left null to use
 `master_seed`. Every sample derives its own random streams from
 `(sample_seed, split_id, global_sample_index)`. Canonical metadata
@@ -331,40 +422,279 @@ scalp radius when loaded. See `spherical_eeg_sim/montages/_templates/NOTICE`.
 Every generation run executes internal checks for the transfer-coefficient
 cross-check, direct-versus-basis consistency, rotational covariance,
 finite/nonzero numerical sanity, configured distributions, and position-split
-leakage. The split audit reads the source-pool indices back from each serialized
-backend and checks both cross-split overlap and membership in the assigned pool.
+membership. The split audit reads the source-pool indices back from each
+serialized backend and checks membership and cross-split reuse against the
+configured split policy.
 Any failed distribution check aborts staged publication.
 The algebraic checks share implementation assumptions and are correctly treated
 as self-consistency tests.
 
-Independent evidence is separate:
+The validation scripts use several complementary checks.
 
-- `scripts/validate_inverse_mne.py` compares serialized point-source datasets
-  with MNE-Python’s independent Berg–Scherg sphere approximation, including
-  position, signed orientation, and instantaneous moment-amplitude recovery;
+- `scripts/validate_inverse_mne.py` checks point-source position, signed
+  orientation, and instantaneous moment-amplitude recovery against MNE-Python's
+  Berg–Scherg approximation under matched spherical head-model assumptions.
 - `scripts/validate_patch_forward_mne.py` rebuilds each serialized patch from
-  its stored CSR support and superposes the same independent forward solution,
-  against a point-source control that establishes the approximation floor;
+  its stored CSR support and superposes the MNE-Python forward solution under
+  the same matched-sphere assumptions, with a point-source comparison to
+  characterize the difference between implementations.
+- `scripts/run_sphere_fit_convergence.py` records how the Berg–Scherg parameter
+  fit of MNE-Python ends for the head models of this package, and how both
+  comparisons react to a converged fit, to last-bit changes of the fit
+  objectives, to another kernel of the linear-algebra library and to dipole
+  fits that are run to a small trust-region radius.
+- `scripts/run_dipole_comparators_converged.py` repeats the sphere-model
+  dipole fits of the experiments below on their own windows with a converged
+  parameter fit.
+- `scripts/check_installed_sphere_fit.py` counts how the Berg–Scherg parameter
+  fit of the installed MNE-Python ends for the same head models, without
+  changing the fit, so it runs with any version of MNE-Python; the two
+  scripts above replace the optimizer call inside MNE-Python 1.12.1.
 - `scripts/validate_transfer_coefficients.py` reproduces the surface coefficient
   from a direct 7x7 boundary-value solve that shares no algebra with the
-  recurrence, at 60 decimal digits;
+  recurrence, at 60 decimal digits.
 - `scripts/legendre_convergence.py` accepts the generation JSON configuration,
   derives valid cases from its source domain, and measures topography error
   against an arbitrary-precision reference (120 decimal digits, summed to order
-  400) after verifying agreement with the order-200 reference;
+  400) after verifying agreement with the order-200 reference.
 - `scripts/measure_split_spacing.py` measures how far a held-out position
   actually lies from the nearest training position, which bounds what a
-  position-level split can claim;
-- `scripts/train_baseline.py` is a demonstration benchmark, not a validation
-  of anatomical realism.
+  position-level split can claim.
+- `scripts/train_baseline.py` demonstrates supervised localization within the
+  spherical model using the default position split.
+- `scripts/run_split_study.py` compares the exact-position and region policies
+  with a multilayer perceptron, a lead-field dictionary, nearest-neighbour
+  lookups and a matched-sphere dipole fit.
+- `scripts/run_patch_split_study.py` makes the same comparison for patches,
+  with the overlap and containment audits of both policies.
+- `scripts/run_head_transfer.py` scores the sphere-trained networks on paired
+  windows generated with the fsaverage boundary-element model, and
+  `scripts/run_head_adaptation.py` repeats the test with spheres matched to
+  that head, sphere-model dipole fits, and networks trained or fine-tuned on
+  boundary-element windows.
+- `scripts/run_shared_position_demo.py` measures coordinate reuse when test
+  locations are redrawn from a shared pool.
+- `scripts/benchmark_generation.py` measures generation time, memory and size.
 
-Install the exact direct numerical stack used for the archived reference runs
-with `pip install -r validation-requirements.txt`.
+`validation-requirements.txt` records the direct numerical stack for the
+historical v1.0.0 Linux validation. For the recorded Windows environment of the experiments,
+use CPython 3.12.16 and `pip install -r validation-windows-requirements.txt`, then
+`pip install -e ".[all]"`. The companion contains ordinary version pins.
+`validation-windows-lock.txt` preserves the original environment record, including
+two conda build paths, because the executed studies hash that original file.
+
+The archived summaries of the numerical validation were recorded with v1.0.0 on
+Linux. Versions 1.0.0 and 1.1.0 generate identical arrays for the two
+comparisons with MNE-Python and give identical results on one machine. The
+statistics of these comparisons are not identical between platforms, however:
+a rerun on Windows with the same library versions gave, for example, a
+90th-percentile position error of 0.84 mm where the archived run has
+0.88 mm. Differences of this size arise in two fits of MNE-Python whose
+results depend on rounding and on the kernel of the linear-algebra library.
+For the head
+model of this package, the fit of the Berg–Scherg parameters in MNE-Python
+1.12.1 ended at the default limit of 1,000 function evaluations of SciPy
+1.17.1 before it had converged, in every recorded run on the Windows machine;
+where it ends sets the field difference of the patch
+comparison. The dipole fits end when the trust-region radius of their
+optimizer reaches 0.05 mm, and a last-bit change of their objective then
+moves a fitted position by up to 1.12 mm, which moves the 90th percentile
+and the maximum of the position error even with a converged parameter fit.
+Over 19 runs on one machine that differed in the last bits of a fit objective
+or in the kernel of OpenBLAS, the median position error was
+0.26 to 0.29 mm, the 90th percentile 0.80 to 0.88 mm and the maximum
+2.39 to 3.03 mm; in the eleven of these runs that include the patch
+comparison, its median field difference was 1.8e-3 to 4.4e-3. With a
+converged parameter fit the field difference was 5.0e-4 in every run. With
+the dipole fits also ended at a radius of 1e-7 m (argument `tol` of
+`mne.fit_dipole`), the three statistics agreed within 0.01 mm over eleven
+runs (0.25, 0.69 and 2.47 mm without changes), although single fitted
+positions still differed from those of the run without changes by up to
+0.15 mm. These runs are examples; their ranges are not bounds for other
+platforms.
+`scripts/run_sphere_fit_convergence.py` records how the fits end and how the
+comparisons react, `scripts/run_dipole_comparators_converged.py` repeats the
+sphere-model dipole fits of the paper's experiments with a converged parameter
+fit, and `validation_results/README.txt` has the numbers.
+
+These numbers belong to MNE-Python 1.12.1. MNE-Python 1.13 ends the parameter
+fit at a final trust-region radius of 1e-4 in place of 1e-5. With MNE-Python
+1.13.2 on the same Windows machine, the fit for the head model of this package
+again reached the limit of 1,000 evaluations, and 13 of the 15 fits for the
+five spheres of the paper under three kernels of OpenBLAS stopped by
+themselves after 52 to 326 evaluations, at objectives about 100 to 210 times
+those at which the same fits stopped with MNE-Python 1.12.1 and the limit
+raised. The dipole recovery then gave a median position
+error of 0.27 mm (90th percentile 0.81 mm, maximum 2.30 mm) and the patch
+comparison a median field difference of 1.8e-3.
+`scripts/check_installed_sphere_fit.py` counts how the fit of the installed
+MNE-Python ends, without changing it.
+
+### Reproduce or verify the validation results
+
+The version 1.1.0 test suite has **356 test functions covering 1,185 cases**
+in the reference Windows Python 3.12 environment. Pytest runs each set of
+inputs to a parameterized function as a separate case. Run `python -m pytest`
+from the repository root to see the counts for your installation and selection.
+
+Run these commands from the repository root. Fresh validation runs use a new
+directory under `validation_runs/` and print their output paths. Explicit
+validation output paths require `--overwrite` if the requested files already
+exist. `validation_results/` contains the historical numerical validation,
+the publication figures, and the tables of the experiments. Its README
+identifies the roles and source records of these artifacts.
+
+| Task | Command | Output and repeat behavior |
+| --- | --- | --- |
+| Verify the shipped archive | `python scripts/make_validation_manifest.py` | Read-only. Reports checksum drift and checks that the archived result bundles agree. `--check` is an alias. |
+| Check the inverse pipeline | `python scripts/validate_inverse_mne.py --quick --no-sweep` | Writes `inverse_recovery_metrics.csv` and `inverse_recovery_summary.json` for 60 dipoles in a new `validation_runs/` directory each time. |
+| Reproduce the archived spacing measurement | `python scripts/measure_split_spacing.py` | Writes a new `split_spacing.json` each time. Compare the cortical test-to-nearest-training medians with the archive at two decimal places (1.71 mm for the default pool, 3.23 mm for the baseline pool). |
+| Generate a small dataset | `spherical-eeg-sim --quickstart --output-dir my_cli_dataset` | Writes a dataset to the chosen directory. Use a fresh directory for another run. |
+| Measure dataset generation | `python scripts/benchmark_generation.py --output-dir validation_runs/generation` | Writes per-case configurations and logs, plus `generation_benchmark.json` with elapsed time, sampled summed process-tree RSS, and storage. Install `.[benchmark]`. Choose a fresh directory for each run. Like the experiment scripts, it records the commit and therefore runs only in a Git checkout without modified or untracked files. |
+| Check patch fields against MNE-Python | `python scripts/validate_patch_forward_mne.py` | Writes `patch_forward_mne_summary.json` in a new `validation_runs/` directory each time. Needs the `mne` extra. |
+| Check the transfer coefficients independently | `python scripts/validate_transfer_coefficients.py` | Writes `transfer_coefficients.json` in a new `validation_runs/` directory each time. Needs `mpmath`. |
+| Audit Legendre truncation | `python scripts/legendre_convergence.py` | Writes `legendre_convergence.json` in a new `validation_runs/` directory each time. Needs `mpmath`; takes several minutes. |
+| Train the baseline localizer | `python scripts/train_baseline.py` | Generates a 25,000-window dataset and writes `baseline_benchmark_summary.json` in a new `validation_runs/` directory each time; `--figure <path>` also writes the figure. Needs scikit-learn. |
+| Regenerate the descriptive figures | `python scripts/make_validation_figures.py` | Writes `pipeline_schematic`, `topographies` and `distributions` as `.png` and `.pdf`, with `publication_figures.json`, in a new `validation_runs/` directory each time. Needs matplotlib. |
+| Regenerate canonical results for maintenance | `python scripts/validate_inverse_mne.py --write-canonical` | Replaces `ecd_69ch_35db_per_sample.csv`, `ecd_69ch_35db_summary.json`, and `ecd_69ch_35db.png` in `validation_results/` using the publication settings. Review the results and rerun `python scripts/make_validation_manifest.py --write-canonical` to record the new checksums. |
+
+Standard checksum verification also works with
+`sha256sum -c validation_results/SHA256SUMS` on Linux or
+`shasum -a 256 -c validation_results/SHA256SUMS` on macOS.
 
 These checks do not establish clinical validity or equivalence to an
 individualized head model. The source release ships compact validation
 summaries, per-sample metrics, and publication figures, but not full generated
 training datasets.
+
+Every script in the table writes to a new location by default and leaves
+`validation_results/` untouched. The `--write-canonical` option replaces the
+archived result of a script and is meant for maintainers. The seven scripts
+that have archived results accept it (`validate_inverse_mne.py`,
+`validate_patch_forward_mne.py`, `validate_transfer_coefficients.py`,
+`legendre_convergence.py`, `measure_split_spacing.py`, `train_baseline.py`,
+`make_validation_figures.py`), as does `make_validation_manifest.py` for the
+checksum list; the last row of the table shows one such command.
+
+### Experiments reported in the paper
+
+The protocols are in `docs/revision_experiments.md`. The per-window predictions
+and summaries of the recorded runs are archived with the paper's evidence
+deposit (see [Citation and license](#citation-and-license));
+`scripts/make_revision_tables.py` rebuilds the experiment tables of the paper
+from that archive. It recomputes the error statistics from the per-window
+files, compares each with the recorded summary and stops at the first
+difference; its description lists the numbers that it reads without
+recomputation. It loads no model files and generates no EEG.
+
+```bash
+python scripts/run_split_study.py --output-dir validation_runs/split-smoke --smoke
+python scripts/run_split_study.py --output-dir validation_runs/split-recorded
+python scripts/plot_split_study.py validation_runs/split-recorded --output-dir validation_runs/split-figures
+python scripts/run_training_count_control.py --split-run validation_runs/split-recorded --output-dir validation_runs/count-control
+python scripts/plot_region_split.py --output-dir validation_runs/region-figure
+python scripts/run_patch_split_study.py --output-dir validation_runs/patch-split-recorded
+python scripts/run_shared_position_demo.py --output-dir validation_runs/shared-positions
+python scripts/run_sphere_fit_convergence.py --output-dir validation_runs/sphere-fit --geometry path/to/evidence/head-adaptation-v11/geometry.json
+python scripts/check_installed_sphere_fit.py --output-dir validation_runs/sphere-fit-installed --geometry path/to/evidence/head-adaptation-v11/geometry.json
+python scripts/make_revision_tables.py --evidence path/to/evidence --output-dir validation_runs/revision-tables
+```
+
+Use a clean committed checkout for recorded runs; the scripts record the
+commit and refuse a modified tree. The experiment drivers (`run_*.py`) also
+have a `--smoke` option that exercises smaller datasets and fits and does not
+reproduce the reported estimates; the plotting scripts and the table driver
+read existing results and have none. The full split study uses three dataset seeds, two model seeds, two
+policies, and fixed 500-window dipole subsets. The recorded Windows run took
+about 41 minutes. Its raw HDF5 files, saved signal and noise components, lead
+fields, and models occupy 15.1 GiB. Allow additional space for temporary
+outputs and template inputs. Each study command requires a new output folder.
+
+The transfer driver uses MNE-Python 1.12.1 and the fsaverage input files fetched
+separately from MNE. Fetch them once before the study.
+
+```bash
+python -c "import mne; mne.datasets.fetch_fsaverage(subjects_dir='validation_runs/templates')"
+python scripts/run_head_transfer.py --split-run validation_runs/split-smoke --subjects-dir validation_runs/templates --output validation_runs/transfer-smoke --smoke
+python scripts/run_head_transfer.py --split-run validation_runs/split-recorded --subjects-dir validation_runs/templates --output validation_runs/transfer-gates --gates-only
+python scripts/run_head_transfer.py --split-run validation_runs/split-recorded --subjects-dir validation_runs/templates --output validation_runs/transfer-recorded
+python scripts/run_head_adaptation.py --split-run validation_runs/split-recorded --subjects-dir validation_runs/templates --transfer-run validation_runs/transfer-recorded --output validation_runs/adaptation-recorded
+python scripts/plot_head_adaptation.py validation_runs/adaptation-recorded --output-dir validation_runs/adaptation-figure
+python scripts/run_dipole_comparators_converged.py --split-run validation_runs/split-recorded --subjects-dir validation_runs/templates --recorded path/to/evidence --output-dir validation_runs/comparators
+```
+
+The first template download is substantial. The transfer run includes dipole
+fits with the boundary-element model on 500 seed-862 windows, which took
+roughly two hours on the recorded host. The adaptation run reuses those
+recorded fits through `--transfer-run`, generates the sphere-variant datasets
+itself, and deletes them once their features are extracted unless
+`--keep-datasets` is given. The saved prediction CSVs reproduce the reported
+medians without opening `.joblib` files. Those model files use Python pickle
+serialization and are optional for numerical review. Load them only when their
+source is trusted.
+
+The transfer scripts pin MNE-Python 1.12.1 and use three of its internal
+functions for the inside-surface test and the scalp projection, so they are a
+record of the reported experiment, not a general interface.
+
+### Generation benchmark
+
+```bash
+python scripts/benchmark_generation.py --output-dir validation_runs/generation --suite all --scratch-dir /path/with/40GiB
+```
+
+The suites are `modes` (point, multi-point and patch sources with one worker),
+`workers` (point sources with the worker counts given by `--workers`),
+`formats` (uncompressed HDF5, NPZ and MATLAB v7.3) and `default-scale` (the
+unmodified default configuration, 360,000 windows, with one worker and with
+each `--workers` value). Fixed-size cases generate `--n-train` training windows
+plus one tenth each for validation and test, and are repeated `--repeats`
+times; the report gives the median and the range. Run the benchmark on an
+otherwise idle machine; each case records the free memory and CPU load it
+started with. The memory statistic is the largest sampled sum of resident
+memory over the generator and its worker processes, including shared pages in
+each process, and can miss peaks between samples.
+
+The recorded run is in `validation_results/generation_benchmark.json`. On that
+host (AMD Ryzen 5 4600H with six cores, 15.4 GiB of memory, Windows 11, Python
+3.12.16, NumPy 2.4.4, h5py 3.16.0 with HDF5 2.0.0):
+
+| Case | Windows | Time | Peak memory | Output |
+| --- | --- | --- | --- | --- |
+| Point sources, HDF5, 1 worker | 12,000 | 76 s | 0.51 GiB | 0.60 GiB |
+| Point sources, HDF5, 6 workers | 12,000 | 92 s | 1.38 GiB | 0.60 GiB |
+| Multi-point sources, HDF5, 1 worker | 12,000 | 87 s | 0.53 GiB | 0.63 GiB |
+| Patches, HDF5, 1 worker | 12,000 | 79 s | 0.53 GiB | 0.62 GiB |
+| Point sources, uncompressed HDF5, 1 worker | 12,000 | 48 s | 0.50 GiB | 0.63 GiB |
+| Point sources, NPZ, 1 worker | 12,000 | 73 s | 2.71 GiB | 0.60 GiB |
+| Point sources, MATLAB v7.3, 1 worker | 12,000 | 85 s | 1.93 GiB | 0.56 GiB |
+| Full default dataset, 1 worker | 360,000 | 26.0 min | 0.56 GiB | 18.0 GiB |
+| Full default dataset, 6 workers | 360,000 | 19.6 min | 1.50 GiB | 18.0 GiB |
+
+Between 17 and 21 s of every run is setup that does not depend on the number
+of windows (the lead-field basis of 41,500 pool positions, or of 35,000 in
+patch mode, and the background pool). Workers parallelize the synthesis of windows only; the parent process
+writes the files, and a pool is started for each split, so workers pay off for
+large datasets and cost time for small ones. Compression saves about 5% of
+the size of float64 EEG and takes about a third of the single-worker time.
+
+What the archived measurements show, and why:
+
+- Worker processes parallelise only the synthesis of windows. Results return to
+  the parent process, which does all writing, and one pool of workers is
+  started for each split. For runs of about ten thousand windows a single
+  worker is therefore fastest; workers pay off for large splits.
+- gzip compression costs about as much time as synthesis and saves only a few
+  percent on float64 EEG. Set `cfg.output.compress = False` when write speed
+  matters more than those few percent.
+- HDF5 streams, so its memory use does not grow with the dataset. NPZ and
+  MATLAB v7.3 hold a complete split in memory before writing.
+
+An interrupted generation run cannot be resumed. It publishes nothing: the
+incomplete staging directory is removed at the next start and the run begins
+again. In a fixed numerical environment, the same scientific configuration and
+seeds reproduce the same canonical data, so a long dataset can also be
+generated as several smaller datasets with different seeds.
 
 ## Examples
 
@@ -391,7 +721,13 @@ its old output yourself or setting `cfg.output.overwrite = True` deliberately.
 
 ## Citation and license
 
-Machine-readable citation metadata is in `CITATION.cff`. SphericalEEGSim is
+Machine-readable citation metadata is in `CITATION.cff`. Every release is
+archived on Zenodo under the concept DOI
+[10.5281/zenodo.21763143](https://doi.org/10.5281/zenodo.21763143), which
+always resolves to the latest version; cite the DOI of the version you used.
+The per-window predictions and summaries behind the paper's experiments are
+archived separately as its evidence deposit, cited in the paper's data
+availability statement. SphericalEEGSim is
 released under the [BSD 3-Clause License](LICENSE). The bundled third-party
 montage templates retain their attributed notices in
 `spherical_eeg_sim/montages/_templates/NOTICE`.

@@ -1,9 +1,11 @@
-include README.md CONTRIBUTING.md CITATION.cff LICENSE validation-requirements.txt
+include README.md CONTRIBUTING.md CHANGELOG.md CITATION.cff LICENSE validation-requirements.txt validation-windows-lock.txt validation-windows-requirements.txt
 recursive-include docs *.md *.bib
 recursive-include examples *.py
 recursive-include scripts *.py
 recursive-include tests *.py
-recursive-include validation_results *.json *.png *.pdf *.csv SHA256SUMS
+include tests/v1_0_0_array_digests.json
+include tests/v1_0_0_portable_arrays.npz tests/v1_0_0_portable_arrays.json
+recursive-include validation_results *.json *.png *.pdf *.csv *.txt SHA256SUMS
 recursive-include spherical_eeg_sim *.py py.typed
 recursive-include spherical_eeg_sim/montages *.csv
 recursive-include spherical_eeg_sim/montages/_templates *

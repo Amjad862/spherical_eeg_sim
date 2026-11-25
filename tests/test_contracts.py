@@ -281,8 +281,9 @@ def test_validation_manifest_is_in_sync():
         text=True,
     )
     assert completed.returncode == 0, (
-        "validation_results/SHA256SUMS is out of date; rerun "
-        "`python scripts/make_validation_manifest.py`.\n" + completed.stdout
+        "Review validation archive drift before updating SHA256SUMS with "
+        "`python scripts/make_validation_manifest.py --write-canonical`.\n"
+        + completed.stdout + completed.stderr
     )
 
 

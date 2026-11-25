@@ -31,7 +31,9 @@ USAGE
 ------------------------------------------------------------------------------
     python scripts/legendre_convergence.py
     python scripts/legendre_convergence.py --config my_config.json
-    python scripts/legendre_convergence.py --json validation_results/legendre_convergence.json
+    python scripts/legendre_convergence.py --write-canonical
+
+Without an explicit path, the summary goes to a new validation_runs/ directory.
 
 Requires mpmath for the reference:
     pip install "spherical_eeg_sim[validation]"      # or: pip install mpmath
@@ -49,6 +51,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts._validation_outputs import ValidationOutputs, add_output_options
 from spherical_eeg_sim.config import Config
 from spherical_eeg_sim.core.electrodes import load_electrodes
 from spherical_eeg_sim.core.forward import (
@@ -289,7 +292,14 @@ def main() -> int:
                     help='JSON configuration (default: shipped defaults)')
     ap.add_argument('--json', default=None,
                     help='write the measurements to this path')
+    add_output_options(ap)
     args = ap.parse_args()
+    outputs = ValidationOutputs(
+        ap, args, name='legendre-convergence',
+        canonical={'json': 'legendre_convergence.json'},
+        settings={'config': None, 'montage': None},
+        explicit={'json': args.json} if args.json is not None else None,
+    )
 
     mp = _require_mpmath()
     mp.mp.dps = REFERENCE_DPS
@@ -378,9 +388,7 @@ def main() -> int:
     print('  (that floor is set by float64 round-off in the transfer '
           'recurrence, not by truncation)')
 
-    if args.json:
-        path = Path(args.json)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    with outputs.stage() as paths:
         payload = {
             'software_environment': environment_snapshot(
                 extra_distributions=('mpmath',)
@@ -425,10 +433,10 @@ def main() -> int:
                 for label, errors in results.items()
             },
         }
-        with path.open('w', newline='\n') as f:
+        with paths['json'].open('w', newline='\n') as f:
             json.dump(payload, f, indent=2, sort_keys=True)
             f.write('\n')
-        print(f'\n  measurements written to {path}')
+    print(f"\n  measurements written to {outputs.paths['json']}")
     return 0
 
 

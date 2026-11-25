@@ -9,9 +9,10 @@ Two ways to write a split:
 
   2. ``open_split_writer(...)`` -- streaming writer that accepts the split
      in chunks via ``.append(eeg_chunk, gt_chunk)`` calls. For HDF5, this
-     produces extendable datasets and never materialises the full split in
-     memory. For NPZ and MAT (which cannot extend on disk), the writer
-     accumulates chunks in memory and writes them at finalize() time.
+     produces extendable datasets and keeps at most one storage block of
+     each dataset in memory (see ``ChunkedHDF5Writer``). For NPZ and MAT
+     (which cannot extend on disk), the writer accumulates chunks in memory
+     and writes them at finalize() time.
 
 The streaming form is what the pipeline uses for large default-scale
 datasets where one full EEG array would exceed available RAM.
@@ -22,10 +23,11 @@ import copy
 import hashlib
 import io
 import json
+import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 import zipfile
 
 import numpy as np
@@ -228,6 +230,10 @@ def save_split(
         output_dir, split_name, fmt, compress,
         source_mode=source_mode, chunk_rows=chunk_rows, eeg_dtype=eeg_dtype,
     )
+    if isinstance(writer, ChunkedHDF5Writer):
+        with writer:
+            writer.append(eeg, ground_truth)
+            return writer.finalize(metadata)
     writer.append(eeg, ground_truth)
     return writer.finalize(metadata)
 
@@ -253,6 +259,11 @@ def open_split_writer(
         for eeg_chunk, gt_chunk in chunks:
             w.append(eeg_chunk, gt_chunk)
         path = w.finalize(metadata)
+
+    The HDF5 writer is also a context manager. Inside a ``with`` block a
+    failure in ``append`` or ``finalize`` closes the file and removes the
+    temporary files; without one they stay open until the object is
+    collected.
 
     Parameters
     ----------
@@ -344,9 +355,29 @@ class ChunkedHDF5Writer:
     The file remains open between appends and is finalised by
     ``finalize(metadata)``. The on-disk chunk size along the leading axis is
     ``chunk_rows`` (default 64), balancing single-sample access against
-    minibatch reads. It is independent of the generation chunk boundaries,
-    which is required for byte-identical output across ``chunk_samples``.
+    minibatch reads.
+
+    Rows are stored in blocks of complete storage chunks, in one fixed order
+    over the datasets. A block holds ``chunk_rows`` rows, or the smallest
+    multiple of ``chunk_rows`` that reaches 64 rows when ``chunk_rows`` is
+    smaller, so its size depends on ``chunk_rows`` alone. Rows that do not
+    yet fill a block wait in memory, and ``finalize`` stores the last,
+    possibly shorter, block. The sequence of HDF5 calls is therefore a
+    function of the data and of ``chunk_rows`` alone, not of how many rows
+    each ``append`` supplies, so the file does not depend on
+    ``chunk_samples`` or ``n_workers``. Writing every generation chunk as it
+    arrived, as version 1.0.0 did, lets the layout follow the sizes of the
+    appends: the first append fixes the initial extent of each dataset, and
+    partly filled storage chunks are stored and replaced later.
+
+    A dense field keeps the dtype of its first append; a later append with
+    another dtype is an error and is not cast.
     """
+
+    # Smallest number of rows stored by one HDF5 call. With one call per
+    # storage chunk, ``chunk_rows=1`` would cost one resize and one write per
+    # window and dataset.
+    _MIN_BLOCK_ROWS = 64
 
     def __init__(
         self,
@@ -368,16 +399,77 @@ class ChunkedHDF5Writer:
         self._compression = 'gzip' if compress else None
         self._source_mode = source_mode
         self._chunk_rows = max(1, int(chunk_rows))
+        # A whole number of storage chunks; a function of chunk_rows alone.
+        self._block_rows = self._chunk_rows * -(-self._MIN_BLOCK_ROWS // self._chunk_rows)
         self._electrodes = electrodes
         self._eeg_dtype = np.dtype(eeg_dtype)
         if self._eeg_dtype not in (np.dtype('float32'), np.dtype('float64')):
             raise ValueError("eeg_dtype must be float32 or float64")
         self._f = h5py.File(self._temp_path, 'w')
-        self._gt_group = self._f.create_group('ground_truth')
+        try:
+            self._gt_group = self._f.create_group('ground_truth')
+        except BaseException as error:
+            _clean_writer_resource(self._f.close, error)
+            raise
         self._eeg_dset = None
         self._gt_dsets: Dict[str, Any] = {}
-        self._written = 0
+        # Dense ground-truth fields in creation order; with the EEG dataset
+        # they define the fixed order in which storage blocks are written.
+        self._dense_keys: List[str] = []
+        # Own each incoming fragment until the block is complete. Repeatedly
+        # extending a contiguous array would recopy all previously held rows.
+        self._pending: List[List[np.ndarray]] = []
+        self._pending_rows = 0
+        self._written = 0   # rows accepted by append()
+        self._stored = 0    # rows stored in the dense HDF5 datasets
         self._closed = False
+
+    def _dense_arrays(
+        self, eeg_chunk: np.ndarray, gt_chunk: Dict[str, Any]
+    ) -> List[np.ndarray]:
+        """EEG and dense truth rows of one append, in storage order."""
+        arrays = [np.asarray(eeg_chunk).astype(self._eeg_dtype, copy=False)]
+        arrays.extend(np.asarray(gt_chunk[key]) for key in self._dense_keys)
+        return arrays
+
+    def _store_block(self, arrays: Iterable[np.ndarray], start: int, stop: int) -> None:
+        """Store rows ``start:stop`` of every dense array as the next block."""
+        new_stored = self._stored + (stop - start)
+        datasets = [self._eeg_dset] + [self._gt_dsets[key] for key in self._dense_keys]
+        for dataset, array in zip(datasets, arrays):
+            dataset.resize(new_stored, axis=0)
+            dataset[self._stored:new_stored] = array[start:stop]
+        self._stored = new_stored
+
+    def _flush_pending(self) -> None:
+        if len(self._pending) == 1:
+            self._store_block(self._pending[0], 0, self._pending_rows)
+        else:
+            # Join one field at a time, once per block, in dataset order.
+            fields = (np.concatenate(parts) for parts in zip(*self._pending))
+            self._store_block(fields, 0, self._pending_rows)
+        self._pending.clear()
+        self._pending_rows = 0
+
+    def _store_complete_blocks(self, arrays: List[np.ndarray], n: int) -> None:
+        """Store every complete block and keep the remainder in memory."""
+        block = self._block_rows
+        offset = 0
+        if self._pending_rows:
+            take = min(block - self._pending_rows, n)
+            self._pending.append([array[:take].copy() for array in arrays])
+            self._pending_rows += take
+            offset = take
+            if self._pending_rows == block:
+                self._flush_pending()
+        while n - offset >= block:
+            self._store_block(arrays, offset, offset + block)
+            offset += block
+        if offset < n:
+            # Reached only with an empty buffer. Copy: the caller may reuse
+            # its arrays before the rows are stored.
+            self._pending.append([array[offset:].copy() for array in arrays])
+            self._pending_rows = n - offset
 
     def append(self, eeg_chunk: np.ndarray, gt_chunk: Dict[str, Any]) -> None:
         if self._closed:
@@ -389,7 +481,7 @@ class ChunkedHDF5Writer:
             _check_required_gt_keys(gt_chunk, self._source_mode)
             eeg_dset = self._f.create_dataset(
                 'eeg',
-                shape=eeg_chunk.shape,
+                shape=(0,) + tuple(eeg_chunk.shape[1:]),
                 maxshape=(None,) + tuple(eeg_chunk.shape[1:]),
                 chunks=(self._chunk_rows,) + tuple(eeg_chunk.shape[1:]),
                 dtype=self._eeg_dtype,
@@ -397,7 +489,6 @@ class ChunkedHDF5Writer:
                 track_times=False,
             )
             self._eeg_dset = eeg_dset
-            eeg_dset[:n] = eeg_chunk.astype(self._eeg_dtype, copy=False)
             for k, v in gt_chunk.items():
                 if isinstance(v, RaggedArray):
                     spool_path = self._temp_path.with_name(
@@ -422,15 +513,14 @@ class ChunkedHDF5Writer:
                 chunk_shape = (self._chunk_rows,) + tuple(arr.shape[1:])
                 self._gt_dsets[k] = self._gt_group.create_dataset(
                     k,
-                    shape=arr.shape,
+                    shape=(0,) + tuple(arr.shape[1:]),
                     maxshape=(None,) + tuple(arr.shape[1:]),
                     chunks=chunk_shape,
                     dtype=arr.dtype,
                     compression=self._compression,
                     track_times=False,
                 )
-                self._gt_dsets[k][:n] = arr
-            self._written = n
+                self._dense_keys.append(k)
         else:
             if eeg_chunk.shape[1:] != self._eeg_dset.shape[1:]:
                 raise ValueError(
@@ -470,20 +560,19 @@ class ChunkedHDF5Writer:
                             f"GT field {k!r} trailing shape {arr.shape[1:]} does "
                             f"not match established shape {descriptor.shape[1:]}"
                         )
-            new_written = self._written + n
-            self._eeg_dset.resize(new_written, axis=0)
-            self._eeg_dset[self._written:new_written] = eeg_chunk.astype(
-                self._eeg_dtype, copy=False
-            )
+                    if arr.dtype != descriptor.dtype:
+                        # Casting would change values silently (a longer byte
+                        # string is cut, a wider integer wraps).
+                        raise ValueError(
+                            f"GT field {k!r} dtype changed from "
+                            f"{descriptor.dtype} to {arr.dtype}"
+                        )
             for k, v in gt_chunk.items():
                 descriptor = self._gt_dsets[k]
                 if isinstance(descriptor, dict):
                     self._append_ragged_spool(descriptor, v)
-                else:
-                    arr = np.asarray(v)
-                    descriptor.resize(new_written, axis=0)
-                    descriptor[self._written:new_written] = arr
-            self._written = new_written
+        self._store_complete_blocks(self._dense_arrays(eeg_chunk, gt_chunk), n)
+        self._written += n
 
     @staticmethod
     def _append_ragged_spool(
@@ -514,6 +603,8 @@ class ChunkedHDF5Writer:
         values_dset = grp.create_dataset(
             'values',
             shape=(n_values,) + trailing_shape,
+            # A chunked dataset without rows needs an extendable first axis.
+            maxshape=((None,) + trailing_shape) if n_values == 0 else None,
             chunks=(max(1, min(block_rows, max(1, n_values))),) + trailing_shape,
             dtype=descriptor['dtype'],
             compression=self._compression,
@@ -550,6 +641,10 @@ class ChunkedHDF5Writer:
     def finalize(self, metadata: Dict[str, Any]) -> Path:
         if self._closed:
             return self.path
+        if self._pending_rows:
+            self._flush_pending()
+        if self._stored != self._written:
+            raise RuntimeError("HDF5 writer lost rows between append and finalize")
         for key, descriptor in self._gt_dsets.items():
             if (
                 isinstance(descriptor, dict)
@@ -572,22 +667,37 @@ class ChunkedHDF5Writer:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not self._closed:
+            def discard_temp_files():
+                for entry in self._gt_dsets.values():
+                    if isinstance(entry, dict):
+                        entry['spool_path'].unlink(missing_ok=True)
+                self._temp_path.unlink(missing_ok=True)
+
+            # Release every handle before attempting to unlink any file.
+            cleanup_errors = []
             for descriptor in self._gt_dsets.values():
-                if not isinstance(descriptor, dict):
-                    continue
-                try:
-                    descriptor['spool'].close()
-                except Exception:
-                    pass
-                if descriptor['spool_path'].exists():
-                    descriptor['spool_path'].unlink()
-            try:
-                self._f.close()
-            except Exception:
-                pass
-            if self._temp_path.exists():
-                self._temp_path.unlink()
+                if isinstance(descriptor, dict):
+                    cleanup_errors.append(_clean_writer_resource(descriptor['spool'].close, exc_val))
+            cleanup_errors.append(_clean_writer_resource(self._f.close, exc_val))
+            cleanup_errors.append(_clean_writer_resource(discard_temp_files, exc_val))
             self._closed = True
+            if exc_val is None:
+                for error in cleanup_errors:
+                    if error is not None:
+                        raise error
+
+
+def _clean_writer_resource(action, original_error):
+    try:
+        action()
+    except Exception as error:
+        if original_error is not None:
+            message = f'HDF5 writer cleanup failed: {error}'
+            logging.getLogger(__name__).warning(message, exc_info=True)
+            if hasattr(original_error, 'add_note'):
+                original_error.add_note(message)
+        return error
+    return None
 
 
 # =============================================================================
@@ -803,6 +913,8 @@ def write_leadfield_operator(
     head: Dict[str, Any],
     fmt: str = 'hdf5',
     compress: bool = True,
+    split_policy: str = 'position',
+    split_membership: Optional[np.ndarray] = None,
 ) -> Path:
     """Write the position-pool basis lead-field operator as an auxiliary file.
 
@@ -818,7 +930,7 @@ def write_leadfield_operator(
     leadfield : ndarray (P, n_channels, 3)
     positions_xyz : ndarray (P, 3), metres
     population : ndarray (P,), 0=cortical 1=subcortical
-    split_label : ndarray (P,), 0=train 1=val 2=test
+    split_label : ndarray (P,), 0=train 1=val 2=test, -1=excluded, -2=shared
     electrodes : dict
         Self-describing electrode block (names, cartesian_xyz,
         spherical_r_theta_phi, reference_mode, reference_info).
@@ -828,6 +940,9 @@ def write_leadfield_operator(
         Container format. Writes ``leadfield.h5``, ``leadfield.npz``, or a
         MATLAB v7.3 ``leadfield.mat``.
     compress : bool
+    split_policy : str
+    split_membership : ndarray (P, 3), optional
+        Shared-policy eligibility in train, val, test order.
 
     Returns
     -------
@@ -853,6 +968,7 @@ def write_leadfield_operator(
         'population_codes': {'cortical': 0, 'subcortical': 1},
         'head': head,
     }
+    membership_data = _describe_split_membership(meta, split_policy, split_membership)
 
     if fmt == 'npz':
         path = output_dir / 'leadfield.npz'
@@ -866,6 +982,7 @@ def write_leadfield_operator(
             'electrode_spherical_r_theta_phi': np.asarray(
                 electrodes.get('spherical_r_theta_phi')),
             '_metadata_json': np.array(json.dumps(_jsonify(meta))),
+            **membership_data,
         }
         temp = output_dir / '.leadfield.writing.npz'
         _deterministic_savez(temp, save_dict, compress)
@@ -896,6 +1013,7 @@ def write_leadfield_operator(
                 ),
             },
             'metadata_json': json.dumps(_jsonify(meta), sort_keys=True),
+            **membership_data,
         }
         hdf5storage.savemat(
             temp, payload, fmt='7.3', appendmat=False,
@@ -925,6 +1043,8 @@ def write_leadfield_operator(
         f.create_dataset(
             'split', data=np.asarray(split_label), track_times=False,
         )
+        for name, values in membership_data.items():
+            f.create_dataset(name, data=values, track_times=False)
         _write_electrodes_group(f, electrodes)
         mg = f.create_group('metadata')
         _write_metadata_to_h5(mg, meta)
@@ -939,6 +1059,9 @@ def write_source_pool(
     split_label: np.ndarray,
     fmt: str = 'hdf5',
     compress: bool = True,
+    split_policy: str = 'position',
+    split_membership: Optional[np.ndarray] = None,
+    patch_containment_radius_mm: Optional[np.ndarray] = None,
 ) -> Path:
     """Write the global source-position pool referenced by sample truth."""
     output_dir = Path(output_dir)
@@ -957,6 +1080,16 @@ def write_source_pool(
         'population_codes': {'cortical': 0, 'subcortical': 1},
         'split_codes': {'train': 0, 'val': 1, 'test': 2},
     }
+    payload.update(_describe_split_membership(meta, split_policy, split_membership))
+    if patch_containment_radius_mm is not None:
+        payload['patch_containment_radius_mm'] = np.asarray(
+            patch_containment_radius_mm, dtype=np.float64,
+        )
+        meta['patch_containment_radius_mm'] = (
+            'Largest patch radius in mm (geodesic on the position radius) that a patch '
+            'centred at each position can have under the region split policy; NaN for '
+            'positions excluded by the buffer.'
+        )
     if fmt == 'npz':
         path = output_dir / 'source_pool.npz'
         data: Dict[str, Any] = dict(payload)
@@ -999,10 +1132,32 @@ def write_source_pool(
         )
         f.create_dataset('population', data=payload['population'], track_times=False)
         f.create_dataset('split', data=payload['split'], track_times=False)
+        if 'split_membership' in payload:
+            f.create_dataset('split_membership', data=payload['split_membership'], track_times=False)
+        if 'patch_containment_radius_mm' in payload:
+            f.create_dataset(
+                'patch_containment_radius_mm', data=payload['patch_containment_radius_mm'],
+                compression=comp, track_times=False,
+            )
         mg = f.create_group('metadata')
         _write_metadata_to_h5(mg, meta)
     _atomic_replace(temp, path)
     return path
+
+
+def _describe_split_membership(
+    metadata: Dict[str, Any], policy: str, membership: Optional[np.ndarray],
+) -> Dict[str, np.ndarray]:
+    if policy == 'region':
+        metadata['split_policy'] = policy
+        metadata['split_codes']['excluded'] = -1
+    elif policy == 'shared':
+        metadata['split_policy'] = policy
+        metadata['split_codes']['shared'] = -2
+        metadata['split_membership_columns'] = ['train', 'val', 'test']
+    if membership is None:
+        return {}
+    return {'split_membership': np.asarray(membership, dtype=np.uint8)}
 
 
 def write_checksum_manifest(output_dir: Union[str, Path]) -> Path:
@@ -1090,6 +1245,8 @@ def write_run_readme(
         ' Dataset summary',
         '-' * 70,
         f"  Source mode      : {source_mode}",
+        *([f"  Split policy     : {cfg_dict['split']['policy']}"]
+          if cfg_dict.get('split', {}).get('policy', 'position') != 'position' else []),
         f"  Output backend   : {fmt}",
         f"  Stored EEG units : {eeg_units}",
         f"  Magnitude convention: {magnitude_convention}",

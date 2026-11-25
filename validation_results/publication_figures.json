@@ -12,33 +12,37 @@
     ],
     "train_snr_db": {
       "maximum": 26.353729285095465,
-      "median": 5.253078348968993,
+      "median": 5.2530783489689865,
       "minimum": -18.743118824244462,
       "p01": -15.102157702655138,
       "p99": 23.252929439848035
     }
   },
   "files": {
-    "distributions.png": "cd8eb38fa7473a923dc3e93547e2b28a76dba0d6617cd874c632ab4704700456",
-    "pipeline_schematic.pdf": "3791d02d4cfa9c8c76fb9f696c7e8b17364026fce164ff57204573a5f95930fe",
-    "pipeline_schematic.png": "8cb5ebceeacbd40f686df718609ca5a578ffe0a3e976917a8d40ba180c10a146",
-    "topographies.png": "31678c4432cfc61066f0147c2ea60708d97abe1510bd73ac3e2c89a7477630e6"
+    "distributions.pdf": "282804223dc1ff0647efa0572a1b351194320da38fdc7a88fc5e0ee8a771cc41",
+    "distributions.png": "31e8d04c7e97b88a0dd744d237567f89be174e9967b597c6206d09284d65c00a",
+    "pipeline_schematic.pdf": "90af8147298bcb736917a3b28b3b11ad8049f07a244925483209f1d3812135ee",
+    "pipeline_schematic.png": "f2a8238c4c481352d2aae262678d1f3dd7257a1d784503b7ab9e8ef97e21bd73",
+    "topographies.pdf": "be3ba6c18fe06e3b8c49d244e56b3a82a3dbdcc94ab71c02c48cb2d0e5d6824d",
+    "topographies.png": "806af13136c2326482d47b63acd9451a1b3032cb3cecc4900bdeda83c6d98399"
   },
   "software_environment": {
     "byteorder": "little",
     "package": "spherical_eeg_sim",
-    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "platform": "Windows-11-10.0.26200-SP0",
     "python_implementation": "CPython",
-    "python_version": "3.12.13",
+    "python_version": "3.12.16",
     "software_versions": {
       "h5py": "3.16.0",
+      "hdf5storage": "0.2.2",
       "libhdf5": "2.0.0",
       "matplotlib": "3.10.8",
       "mne": "1.12.1",
       "numpy": "2.4.4",
+      "pandas": "3.0.5",
       "scikit-learn": "1.9.0",
       "scipy": "1.17.1",
-      "spherical_eeg_sim": "1.0.0"
+      "spherical_eeg_sim": "1.1.0+source"
     }
   }
 }

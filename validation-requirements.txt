@@ -2,11 +2,11 @@
 # scripts/, pinned at the versions that produced the archived results in
 # validation_results/. The reference environment used CPython 3.12.13 on
 # x86_64 Linux with libhdf5 2.0.0; each archived summary records the full
-# software environment that produced it. Equivalent-current-dipole fitting and
-# multilayer-perceptron training are iterative, so low-order digits also depend
-# on the interpreter, the HDF5 build, and the BLAS backend. The rounded metrics
-# reported in the manuscript, not byte-identical digits, define the expected
-# reproduction target.
+# software environment that produced it. The fits of MNE-Python and the training
+# of the multilayer perceptron are iterative, so the results also depend on the
+# platform: with these versions on Windows, some statistics of the two
+# comparisons with MNE-Python differ from the archived ones in the second
+# significant digit. validation_results/README.txt gives both sets of values.
 numpy==2.4.4
 scipy==1.17.1
 h5py==3.16.0

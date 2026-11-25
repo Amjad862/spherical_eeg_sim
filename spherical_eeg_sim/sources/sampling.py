@@ -4,8 +4,7 @@ Source sampling: positions, orientations, magnitudes.
 This module is responsible for choosing where dipoles live (cortical shell
 and subcortical volume), what direction they point (uniform-on-sphere or
 codebook), what magnitude they have (log-uniform default), and how they
-are partitioned into train/val/test splits without leakage at the position
-level.
+are partitioned into train/val/test splits with disjoint position indices.
 
 All randomness flows from a numpy.random.Generator passed in by the caller,
 so the entire sampling stage is reproducible from the master seed.
@@ -762,13 +761,7 @@ def _assign_depth_stratified(
         return
 
     if stratify_by_depth:
-        radii = np.linalg.norm(positions_xyz[member_indices], axis=1)
-        if M >= depth_bins:
-            quantiles = np.quantile(radii, np.linspace(0, 1, depth_bins + 1))
-            quantiles[-1] += 1e-12  # include the max value in the last bin
-            bin_idx = np.digitize(radii, quantiles[1:-1])
-        else:
-            bin_idx = np.zeros(M, dtype=np.int64)
+        bin_idx = _depth_bin_indices(positions_xyz[member_indices], depth_bins)
     else:
         bin_idx = np.zeros(M, dtype=np.int64)
 
@@ -796,3 +789,12 @@ def _assign_depth_stratified(
         split_out[members[:n_train_bin]] = 0
         split_out[members[n_train_bin:n_train_bin + n_val_bin]] = 1
         split_out[members[n_train_bin + n_val_bin:]] = 2
+
+
+def _depth_bin_indices(positions_xyz: np.ndarray, depth_bins: int) -> np.ndarray:
+    """Equal-count radial bin labels used by the position splitter."""
+    if positions_xyz.shape[0] < depth_bins:
+        return np.zeros(positions_xyz.shape[0], dtype=np.int64)
+    radii = np.linalg.norm(positions_xyz, axis=1)
+    quantiles = np.quantile(radii, np.linspace(0, 1, depth_bins + 1))
+    return np.digitize(radii, quantiles[1:-1])
