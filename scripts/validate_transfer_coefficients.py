@@ -39,7 +39,9 @@ alone and not float64 round-off. The linear system is written in a scaled basis,
 USAGE
 ------------------------------------------------------------------------------
     python scripts/validate_transfer_coefficients.py
-    python scripts/validate_transfer_coefficients.py --json validation_results/transfer_coefficients.json
+    python scripts/validate_transfer_coefficients.py --write-canonical
+
+Without an explicit path, the summary goes to a new validation_runs/ directory.
 
 Requires mpmath:
     pip install "spherical_eeg_sim[validation]"      # or: pip install mpmath
@@ -54,6 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts._validation_outputs import ValidationOutputs, add_output_options
 from spherical_eeg_sim.config import Config
 from spherical_eeg_sim.provenance import environment_snapshot
 
@@ -174,7 +177,13 @@ def main() -> int:
     )
     ap.add_argument('--json', default=None,
                     help='write the measurements to this path')
+    add_output_options(ap)
     args = ap.parse_args()
+    outputs = ValidationOutputs(
+        ap, args, name='transfer-coefficients',
+        canonical={'json': 'transfer_coefficients.json'},
+        explicit={'json': args.json} if args.json is not None else None,
+    )
 
     mp = _require_mpmath()
     mp.mp.dps = DPS
@@ -215,9 +224,9 @@ def main() -> int:
     print(f'  verdict             : '
           f'{"the two routes agree" if agreed else "MISMATCH"}')
 
-    if args.json:
-        path = Path(args.json)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    if args.write_canonical and not agreed:
+        return 1
+    with outputs.stage() as paths:
         payload = {
             'software_environment': environment_snapshot(
                 extra_distributions=('mpmath',)
@@ -229,10 +238,10 @@ def main() -> int:
             'agreement': bool(agreed),
             'cases': results,
         }
-        with path.open('w', newline='\n') as f:
+        with paths['json'].open('w', newline='\n') as f:
             json.dump(payload, f, indent=2, sort_keys=True)
             f.write('\n')
-        print(f'\n  measurements written to {path}')
+    print(f"\n  measurements written to {outputs.paths['json']}")
     return 0 if agreed else 1
 
 

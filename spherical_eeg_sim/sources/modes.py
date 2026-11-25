@@ -489,6 +489,7 @@ def generate_patch_samples(
     population_pool: np.ndarray,
     time_courses: np.ndarray,
     rng: np.random.Generator,
+    containment_radius_mm: Optional[np.ndarray] = None,
 ) -> SampleBatch:
     """Generate patch samples (extended cortical activations).
 
@@ -520,6 +521,13 @@ def generate_patch_samples(
     ``patch_active_moments_nAm`` arrays store the exact support and signed
     radial moment allocation; the pipeline maps the indices to the exported
     global source pool.
+
+    ``containment_radius_mm`` is given only for the region split policy. It
+    holds the largest radius admitted by the planner at each position. The
+    bound can be conservative near sector corners. The diameter is drawn
+    first and the centre uniformly from the admitted positions, so the diameter distribution is
+    the configured one in every split. Without it the centre is drawn first,
+    exactly as in earlier releases.
     """
     N_channels = leadfield_pool.shape[1]
     T = time_courses.shape[1]
@@ -534,6 +542,10 @@ def generate_patch_samples(
     # sphere, so every candidate enters the geometry only through its
     # direction. The directions depend on the pool alone, not on the sample.
     cort_unit = cort_xyz / np.linalg.norm(cort_xyz, axis=1, keepdims=True)
+    cort_containment_mm = (
+        None if containment_radius_mm is None
+        else np.asarray(containment_radius_mm, dtype=np.float64)[cort_pool_idx]
+    )
 
     diameter_low_mm, diameter_high_mm = cfg.patch.diameter_range_mm
     falloff = cfg.patch.falloff_profile
@@ -552,15 +564,27 @@ def generate_patch_samples(
     eeg = np.zeros((n_samples, N_channels, T), dtype=np.float64)
 
     for i in range(n_samples):
-        # Choose patch center
-        center_local = int(rng.integers(0, cort_pool_idx.size))
+        if cort_containment_mm is None:
+            # Choose patch center
+            center_local = int(rng.integers(0, cort_pool_idx.size))
+
+            # Choose diameter and compute its geodesic radius.
+            D_mm = rng.uniform(diameter_low_mm, diameter_high_mm)
+            radius_mm = D_mm / 2.0
+        else:
+            # Region policy: draw the diameter first, then a center that can
+            # contain the whole patch inside its own split region.
+            D_mm = rng.uniform(diameter_low_mm, diameter_high_mm)
+            radius_mm = D_mm / 2.0
+            admissible = np.flatnonzero(cort_containment_mm >= radius_mm)
+            if admissible.size == 0:
+                raise RuntimeError(
+                    f"No position in this split meets the containment rule for a {D_mm:.1f} mm patch"
+                )
+            center_local = int(admissible[rng.integers(0, admissible.size)])
         center_global = int(cort_pool_idx[center_local])
         center_xyz = position_pool_xyz[center_global]
         center_pool_idx[i] = center_global
-
-        # Choose diameter and compute its geodesic radius.
-        D_mm = rng.uniform(diameter_low_mm, diameter_high_mm)
-        radius_mm = D_mm / 2.0
 
         # Great-circle separation on the notional spherical cortical surface.
         # Multiplying the angular distance by the center radius gives the
@@ -632,7 +656,7 @@ def generate_patch_samples(
         # Coherent cortex-normal orientation field. The recorded patch
         # orientation is the signed center normal, while each active dipole
         # uses its own signed local radial normal when projected.
-        center_norm = np.linalg.norm(center_xyz)
+        center_norm = float(np.linalg.norm(center_xyz))
         e_r_center = center_xyz / max(center_norm, 1e-12)
         sign = float(rng.choice([-1.0, 1.0]))
         orientation_world_i = sign * e_r_center

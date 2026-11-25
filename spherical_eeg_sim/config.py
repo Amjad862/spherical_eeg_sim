@@ -379,6 +379,9 @@ class PatchConfig(_StrictFields):
     # discretization cap rather than a reported physiological density.
     dipoles_per_mm2: float = 1.0
 
+    # Report cross-split overlap of the nominal spherical-cap footprints.
+    report_overlap: bool = True
+
 
 # =============================================================================
 # Signal model
@@ -603,14 +606,7 @@ class NoiseConfig(_StrictFields):
 
 @dataclass
 class SplitConfig(_StrictFields):
-    """Position-level held-out splits.
-
-    Unlike many published ESI generators which sample test data from the
-    same lead-field configurations as training (introducing position-level
-    leakage), we split at the position level: a position assigned to test
-    never appears in train or val. This is a stricter and more honest
-    evaluation protocol.
-    """
+    """Source-position eligibility for independent train/val/test windows."""
     # Stratify the split by radial depth bins to ensure each split has
     # balanced superficial/deep representation.
     stratify_by_depth: bool = True
@@ -621,6 +617,17 @@ class SplitConfig(_StrictFields):
     # the synthetic supervised-ESI setting (Hecker et al. 2021; Sun et al.
     # 2022), but those papers do not prescribe this count.
     depth_bins: int = 10
+
+    # 'position' assigns each position to one split. 'region' holds out
+    # buffered spatial sectors and, in patch mode, admits a patch only where
+    # its whole footprint stays inside its own split region. 'shared' makes a
+    # common fraction of the finite position pool eligible for all three
+    # splits (point and multi-point modes).
+    policy: str = 'position'
+    region_count: Optional[int] = None
+    buffer_mm: Optional[float] = None
+    region_rotation_seed: Optional[int] = None
+    shared_position_fraction: Optional[float] = None
 
 
 # =============================================================================
@@ -732,8 +739,9 @@ class OutputConfig(_StrictFields):
     # On-disk chunk size (samples along the leading axis) for native HDF5
     # datasets. Larger values speed up minibatch reads; smaller values speed
     # up single-sample random access. It is independent of the generation
-    # chunk size. Affects storage layout and read performance only, never the
-    # generated arrays. Must be a positive int.
+    # chunk size: the writer stores complete storage chunks only. Affects
+    # storage layout and read performance only, never the generated arrays.
+    # Must be a positive int.
     hdf5_chunk_rows: int = 64
 
     # ---- EEG reference convention ----
@@ -1054,17 +1062,21 @@ class Config(_StrictFields):
                 "position-level split has cortical support"
             )
         if self.source_mode != 'patch':
+            minimum_positions = (
+                1 if self.split.policy == 'shared'
+                and self.split.shared_position_fraction == 1.0 else 3
+            )
             if (self.sources.subcortical_fraction < 1.0
-                    and self.sources.n_cortical_positions < 3):
+                    and self.sources.n_cortical_positions < minimum_positions):
                 raise ValueError(
-                    "n_cortical_positions must be >= 3 when "
+                    f"n_cortical_positions must be >= {minimum_positions} when "
                     "subcortical_fraction < 1 so every position split has "
                     "an eligible superficial source"
                 )
             if (self.sources.subcortical_fraction > 0.0
-                    and self.sources.n_subcortical_positions < 3):
+                    and self.sources.n_subcortical_positions < minimum_positions):
                 raise ValueError(
-                    "n_subcortical_positions must be >= 3 when "
+                    f"n_subcortical_positions must be >= {minimum_positions} when "
                     "subcortical_fraction > 0 so every position split has "
                     "an eligible deep source"
                 )
@@ -1175,6 +1187,8 @@ class Config(_StrictFields):
         require_finite("patch.dipoles_per_mm2", self.patch.dipoles_per_mm2)
         if self.patch.dipoles_per_mm2 <= 0:
             raise ValueError("patch.dipoles_per_mm2 must be > 0")
+        if not isinstance(self.patch.report_overlap, bool):
+            raise ValueError("patch.report_overlap must be boolean")
         if self.source_mode == 'patch':
             self._warn_if_patch_support_is_sparse(dlow)
 
@@ -1224,19 +1238,16 @@ class Config(_StrictFields):
             raise ValueError("All band probabilities must be non-negative")
         if sum(self.signal.band_probabilities.values()) <= 0:
             raise ValueError("Band probabilities must sum to a positive value")
-        nyquist = 0.5 * float(self.signal.sampling_freq_hz)
+        from .signals.source_signals import _validate_band_upper_edge
+
         for name, lh in self.signal.bands_hz.items():
             low, high = require_pair(f"signal.bands_hz[{name!r}]", lh)
             if low >= high or low < 0:
                 raise ValueError(f"bands_hz[{name!r}] must be [low, high] with 0 <= low < high")
-            if high >= nyquist:
-                raise ValueError(
-                    f"signal.bands_hz[{name!r}] high edge {high:g} Hz reaches "
-                    f"or exceeds the Nyquist frequency {nyquist:g} Hz. A "
-                    "sinusoid sampled exactly at Nyquist is degenerate (its "
-                    "sampled amplitude depends only on phase), so the band "
-                    "must close strictly below it."
-                )
+            try:
+                _validate_band_upper_edge(name, high, self.signal.sampling_freq_hz)
+            except ValueError as error:
+                raise ValueError(f"signal.bands_hz[{name!r}]: {error}") from error
         if self.signal.low_freq_band_policy not in ('restrict', 'keep'):
             raise ValueError(
                 "signal.low_freq_band_policy must be 'restrict' or 'keep'; "
@@ -1345,6 +1356,27 @@ class Config(_StrictFields):
         require_int("split.depth_bins", self.split.depth_bins, 1)
         if not isinstance(self.split.stratify_by_depth, bool):
             raise ValueError("split.stratify_by_depth must be boolean")
+        if self.split.policy not in ('position', 'region', 'shared'):
+            raise ValueError("split.policy must be 'position', 'region', or 'shared'")
+        if self.source_mode == 'patch' and self.split.policy == 'shared':
+            raise ValueError("Patch mode supports split.policy='position' or 'region'")
+        if self.split.policy == 'region':
+            require_int("split.region_count", self.split.region_count, 3)
+            require_int("split.region_rotation_seed", self.split.region_rotation_seed, 0)
+            if require_finite("split.buffer_mm", self.split.buffer_mm) < 0:
+                raise ValueError("split.buffer_mm must be >= 0")
+        elif any(getattr(self.split, name) is not None for name in (
+            'region_count', 'buffer_mm', 'region_rotation_seed',
+        )):
+            raise ValueError("Region settings require split.policy='region'")
+        if self.split.policy == 'shared':
+            fraction = require_finite(
+                "split.shared_position_fraction", self.split.shared_position_fraction,
+            )
+            if not 0 < fraction <= 1:
+                raise ValueError("split.shared_position_fraction must be in (0, 1]")
+        elif self.split.shared_position_fraction is not None:
+            raise ValueError("split.shared_position_fraction requires split.policy='shared'")
 
         # Dataset sizing
         for name in ("n_train", "n_val", "n_test"):
@@ -1445,7 +1477,9 @@ class Config(_StrictFields):
         Patch support is recruited from the split-local cortical mesh, so the
         realised density of active dipoles is set by
         ``sources.n_cortical_positions`` divided across the three splits, not by
-        ``patch.dipoles_per_mm2``. That parameter is an upper cap: it binds only
+        ``patch.dipoles_per_mm2``. Under the region policy each split keeps every
+        pool position inside its own sectors, so its mesh has the full pool
+        density instead of one third of it. That parameter is an upper cap: it binds only
         when the pool is denser than the cap. A pool that leaves the smallest
         configured patch with a handful of dipoles produces something closer to
         a small cluster of point sources than a distributed activation, so the
@@ -1454,15 +1488,18 @@ class Config(_StrictFields):
         r_lo, r_hi = self.sources.cortical_radius_range_mm
         mean_radius_mm = 0.5 * (float(r_lo) + float(r_hi))
         shell_area_mm2 = 4.0 * math.pi * mean_radius_mm ** 2
-        # Patch mode splits the position pool into three equal support meshes.
-        per_split_positions = self.sources.n_cortical_positions / 3.0
+        # The default policy splits the position pool into three equal support
+        # meshes that each cover the sphere; the region policy keeps the pool
+        # density inside every split region.
+        meshes_per_pool = 1.0 if self.split.policy == 'region' else 3.0
+        per_split_positions = self.sources.n_cortical_positions / meshes_per_pool
         realised_density = per_split_positions / shell_area_mm2
         smallest_patch_area_mm2 = math.pi * (float(min_diameter_mm) / 2.0) ** 2
         expected_active = realised_density * smallest_patch_area_mm2
 
         if expected_active < MIN_EXPECTED_PATCH_SUPPORT:
             needed = math.ceil(
-                3.0 * MIN_EXPECTED_PATCH_SUPPORT * shell_area_mm2
+                meshes_per_pool * MIN_EXPECTED_PATCH_SUPPORT * shell_area_mm2
                 / smallest_patch_area_mm2
             )
             warnings.warn(

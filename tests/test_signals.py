@@ -134,9 +134,42 @@ def test_signal_rejects_invalid_direct_dimensions_and_nyquist():
         generate_signal_batch(
             **kwargs, component_dirichlet_concentration=0.0,
         )
-    invalid_bands = {**DEFAULT_BANDS, 'gamma': [30.0, 300.0]}
-    with pytest.raises(ValueError, match='Nyquist'):
-        generate_signal_batch(**{**kwargs, 'bands_hz': invalid_bands})
+    for high in (250.0, 300.0):
+        invalid_bands = {**DEFAULT_BANDS, 'gamma': [30.0, high]}
+        with pytest.raises(ValueError, match='Nyquist'):
+            generate_signal_batch(**{**kwargs, 'bands_hz': invalid_bands})
+        with pytest.raises(ValueError, match='Nyquist'):
+            resolve_effective_band_probabilities(invalid_bands, DEFAULT_PROBS, 100, 500.0)
+
+
+@pytest.mark.parametrize('sampling_rate', [500.0, 501.0, 255.0])
+def test_all_signal_entry_points_enforce_strict_nyquist(sampling_rate):
+    from spherical_eeg_sim import Config
+
+    boundary = sampling_rate / 2
+    for high in (np.nextafter(boundary, -np.inf), boundary, np.nextafter(boundary, np.inf)):
+        bands = {'wide': [30.0, high]}
+        cfg = Config()
+        cfg.signal.sampling_freq_hz = sampling_rate
+        cfg.signal.bands_hz = bands
+        cfg.signal.band_probabilities = {'wide': 1.0}
+        cfg.signal.band_order = ['wide']
+
+        def generate():
+            generate_signal_batch(
+                n_samples=2, window_samples=100, sampling_freq_hz=sampling_rate,
+                bands_hz=bands, band_probabilities={'wide': 1.0}, rng=np.random.default_rng(0),
+            )
+
+        def resolve():
+            resolve_effective_band_probabilities(bands, {'wide': 1.0}, 100, sampling_rate)
+
+        for call in (cfg.validate, generate, resolve):
+            if high < boundary:
+                call()
+            else:
+                with pytest.raises(ValueError, match='Nyquist'):
+                    call()
 
 
 def test_pink_noise_normalized():

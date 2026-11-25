@@ -1,0 +1,22 @@
+{
+  "summary_sha256": "83c226ee2087d1ab70b2ac141e1b7bb264a3ffe9a7e82fd468b7a671ccedb4f3",
+  "plotted": {
+    "methods": [
+      "mlp_pooled",
+      "dictionary",
+      "knn10"
+    ],
+    "distance_bins_mm": [
+      "0\u20135",
+      "5\u201310",
+      "10\u201320",
+      "20\u201330",
+      "\u226530"
+    ],
+    "rule": "mean over dataset seeds with at least 30 distinct test positions in the bin"
+  },
+  "files": {
+    "split_localization_error.png": "74e29e7b140a7108e77b31a17b81a7926407165b92ba577526f7ed6accd56542",
+    "split_localization_error.pdf": "2bff7d830bda7fd8e187e06eb2a0eea532373866c46c9741601a43677b381879"
+  }
+}

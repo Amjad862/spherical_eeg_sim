@@ -1,0 +1,152 @@
+{
+  "summary_sha256": "4e5cf07c13fbd60c04003ca6998a3740ca61da7103c3227266e3df098280523e",
+  "training_windows": {
+    "100": 100.0,
+    "300": 300.0,
+    "1000": 1000.0,
+    "3000": 3000.0,
+    "all": 11992.333333333334
+  },
+  "plotted": {
+    "finetuned": {
+      "100": {
+        "dataset_seed_medians_mm": [
+          6.701042578831027,
+          7.346881200928253,
+          7.08414327160388
+        ],
+        "mean_of_dataset_seed_medians": 7.044022350454386,
+        "range": [
+          6.701042578831027,
+          7.346881200928253
+        ],
+        "mean_difference_from_default_mm": -0.4443520915072326
+      },
+      "300": {
+        "dataset_seed_medians_mm": [
+          5.564276966546795,
+          5.68418216341803,
+          5.853078396529185
+        ],
+        "mean_of_dataset_seed_medians": 5.700512508831337,
+        "range": [
+          5.564276966546795,
+          5.853078396529185
+        ],
+        "mean_difference_from_default_mm": -1.7878619331302827
+      },
+      "1000": {
+        "dataset_seed_medians_mm": [
+          5.533125116632106,
+          5.492426964289999,
+          5.120168900922722
+        ],
+        "mean_of_dataset_seed_medians": 5.381906993948275,
+        "range": [
+          5.120168900922722,
+          5.533125116632106
+        ],
+        "mean_difference_from_default_mm": -2.1064674480133436
+      },
+      "3000": {
+        "dataset_seed_medians_mm": [
+          5.076253423723358,
+          5.257664736904757,
+          4.917171145279565
+        ],
+        "mean_of_dataset_seed_medians": 5.08369643530256,
+        "range": [
+          4.917171145279565,
+          5.257664736904757
+        ],
+        "mean_difference_from_default_mm": -2.404678006659059
+      },
+      "all": {
+        "dataset_seed_medians_mm": [
+          4.405713204904416,
+          4.577529612358581,
+          4.815609413189344
+        ],
+        "mean_of_dataset_seed_medians": 4.59961741015078,
+        "range": [
+          4.405713204904416,
+          4.815609413189344
+        ],
+        "mean_difference_from_default_mm": -2.888757031810839
+      }
+    },
+    "scratch": {
+      "100": {
+        "dataset_seed_medians_mm": [
+          23.82069750019298,
+          22.73889802385966,
+          22.701022918226183
+        ],
+        "mean_of_dataset_seed_medians": 23.086872814092942,
+        "range": [
+          22.701022918226183,
+          23.82069750019298
+        ],
+        "mean_difference_from_default_mm": 15.598498372131322
+      },
+      "300": {
+        "dataset_seed_medians_mm": [
+          14.081717187186863,
+          14.512450092395575,
+          15.135164794478534
+        ],
+        "mean_of_dataset_seed_medians": 14.57644402468699,
+        "range": [
+          14.081717187186863,
+          15.135164794478534
+        ],
+        "mean_difference_from_default_mm": 7.088069582725371
+      },
+      "1000": {
+        "dataset_seed_medians_mm": [
+          11.350100700757768,
+          11.124086386906576,
+          11.107858679733035
+        ],
+        "mean_of_dataset_seed_medians": 11.194015255799124,
+        "range": [
+          11.107858679733035,
+          11.350100700757768
+        ],
+        "mean_difference_from_default_mm": 3.705640813837507
+      },
+      "3000": {
+        "dataset_seed_medians_mm": [
+          8.885212690327918,
+          9.633569953354126,
+          9.569986157753984
+        ],
+        "mean_of_dataset_seed_medians": 9.36292293381201,
+        "range": [
+          8.885212690327918,
+          9.633569953354126
+        ],
+        "mean_difference_from_default_mm": 1.8745484918503903
+      },
+      "all": {
+        "dataset_seed_medians_mm": [
+          5.013380344509587,
+          4.917505758348777,
+          5.49356440480069
+        ],
+        "mean_of_dataset_seed_medians": 5.141483502553018,
+        "range": [
+          4.917505758348777,
+          5.49356440480069
+        ],
+        "mean_difference_from_default_mm": -2.3468909394086013
+      }
+    }
+  },
+  "frozen_network_on_bem_windows_mm": 7.488374441961619,
+  "frozen_network_on_sphere_windows_mm": 4.74860062541006,
+  "files": {
+    "head_adaptation_finetuning.png": "975d3508f2f00e63fbe5c07029bd344e27887cf91420fa9ceef52519c83f5a49",
+    "head_adaptation_finetuning.pdf": "d7d3602d624e7240e6b2193d842e37d949b31e5e5d39d5a82ba6a050bd7c73a7"
+  }
+}

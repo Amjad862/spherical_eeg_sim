@@ -71,6 +71,15 @@ def _resolve_band_order(
     return names
 
 
+def _validate_band_upper_edge(name: str, high_hz: float, sampling_freq_hz: float) -> None:
+    nyquist = 0.5 * float(sampling_freq_hz)
+    if float(high_hz) >= nyquist:
+        raise ValueError(
+            f"Band {name!r} high edge {float(high_hz):g} Hz reaches or exceeds "
+            f"the Nyquist frequency {nyquist:g} Hz. The band must close strictly below it."
+        )
+
+
 def band_cycles_in_window(
     f_low_hz: float, window_samples: int, sampling_freq_hz: float
 ) -> float:
@@ -130,6 +139,8 @@ def resolve_effective_band_probabilities(
         n: band_cycles_in_window(bands_hz[n][0], window_samples, sampling_freq_hz)
         for n in names
     }
+    for name in names:
+        _validate_band_upper_edge(name, bands_hz[name][1], sampling_freq_hz)
     under = [n for n in names if cycles[n] < min_band_cycles]
 
     base = _normalize_probabilities({n: band_probabilities[n] for n in names})
@@ -273,12 +284,8 @@ def generate_signal_batch(
         )
 
     band_names = _resolve_band_order(bands_hz, band_probabilities, band_order)
-    nyquist = 0.5 * float(sampling_freq_hz)
     for name in band_names:
-        if float(bands_hz[name][1]) > nyquist:
-            raise ValueError(
-                f"Band {name!r} high edge exceeds the Nyquist frequency"
-            )
+        _validate_band_upper_edge(name, bands_hz[name][1], sampling_freq_hz)
     n_bands = len(band_names)
 
     probs = _normalize_probabilities({k: band_probabilities[k] for k in band_names})

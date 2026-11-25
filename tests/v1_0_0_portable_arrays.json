@@ -1,0 +1,19 @@
+{
+  "source_commit": "1a732114ab5a13cca5d4808ddf406274420b7a50",
+  "package_version": "1.0.0",
+  "source_verification": "Every package file matched the authenticated git archive of this commit before capture.",
+  "capture_environment": {
+    "os": "Windows",
+    "python": "3.12.16",
+    "numpy": "2.4.4",
+    "scipy": "1.17.1",
+    "h5py": "3.16.0",
+    "hdf5": "2.0.0"
+  },
+  "numeric_arrays": 264,
+  "bytes": 495947,
+  "sha256": "bd69968d071d9734b65ba12c169f131f862e8447a9e096569699522d40b97735",
+  "capture_command": "In a clean checkout of the source_commit, copy the revised tests/test_release_arrays.py into tests, then run python -B tests/test_release_arrays.py --capture-portable.",
+  "configuration": "portable_config() in tests/test_release_arrays.py, using HDF5, 3/2/2 windows, 19 channels and 32 samples.",
+  "tolerance": "Integer and label arrays compare exactly. Floating arrays use rtol=1e-10 and absolute tolerance 1e-12 times the reference array maximum magnitude."
+}

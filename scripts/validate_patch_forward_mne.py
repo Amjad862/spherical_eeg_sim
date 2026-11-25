@@ -1,5 +1,5 @@
 """
-Cross-implementation check of distributed cortical-patch scalp fields.
+Cross-implementation check of patch fields under matched spherical assumptions.
 
 Point-mode ground truth is validated by equivalent-current-dipole recovery in
 scripts/validate_inverse_mne.py. Patch mode carries a different and larger
@@ -22,10 +22,9 @@ sample the script reads back, from the finalized file alone:
 Each active dipole is then rebuilt as a discrete MNE source with a radial
 normal, its scalp field is computed by MNE's own multilayer-sphere EEG forward,
 the fields are superposed with the stored moments, referenced, and compared with
-the clean EEG the package wrote. Agreement therefore tests the patch support
-selection, the geodesic distance used for the falloff, the falloff weights, the
-signed radial normals, the CSR serialization, and the superposition itself --
-end to end, through the written file.
+the clean EEG the package wrote. Agreement tests whether the serialized
+support, signed radial moments, and time course reproduce the scalp field under
+matched spherical geometry and conductivity assumptions.
 
 ------------------------------------------------------------------------------
 WHY A FORWARD CHECK RATHER THAN A DISTRIBUTED INVERSE
@@ -43,17 +42,25 @@ THE POINT-SOURCE CONTROL
 ------------------------------------------------------------------------------
 MNE fits the Berg-Scherg three-dipole equivalent-source approximation to the
 multilayer sphere, so it does not reproduce the exact series to machine
-precision, and the residual is a property of that approximation rather than of
-either package. The script therefore runs the identical comparison on point-mode
-data. That control establishes the approximation floor, and the patch result is
-interpreted only relative to it. Comparable summary distributions indicate that
-no patch-specific excess is apparent above that floor in this experiment.
+precision. The residual belongs to that approximation as MNE-Python fits it.
+For the head model of the package, the parameter fit of MNE-Python 1.12.1 with
+SciPy 1.17.1 ends at SciPy's limit of 1,000 function evaluations before it has
+converged, so the residual is larger than that of a converged fit and depends
+on the numerical library (scripts/run_sphere_fit_convergence.py records how
+the fit ends and how the comparison reacts). The script therefore runs the
+identical comparison on point-mode data.
+That control establishes the level of agreement to expect, and the patch result
+is interpreted only relative to it. Comparable summary distributions indicate
+that no patch-specific excess is apparent above that level in this experiment.
 
 ------------------------------------------------------------------------------
 USAGE
 ------------------------------------------------------------------------------
     python scripts/validate_patch_forward_mne.py
     python scripts/validate_patch_forward_mne.py --n-samples 60 --json out.json
+    python scripts/validate_patch_forward_mne.py --write-canonical
+
+Without an explicit path, the summary goes to a new validation_runs/ directory.
 
 Requires MNE-Python and h5py:
     pip install "spherical_eeg_sim[all]"      # or: pip install mne h5py
@@ -72,6 +79,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts._validation_outputs import ValidationOutputs, add_output_options
 from spherical_eeg_sim.config import Config
 from spherical_eeg_sim.pipeline import run_pipeline
 from spherical_eeg_sim.provenance import environment_snapshot
@@ -123,8 +131,11 @@ def mne_superposed_field(positions_m, normals, moments_am, info, sphere, mne):
     return fwd['sol']['data'] @ np.asarray(moments_am, dtype=np.float64)
 
 
-def generate(source_mode, n_samples, out_dir, seed):
+def generate(source_mode, n_samples, out_dir, seed, head=None):
+    """Generate the dataset of the comparison; ``head`` replaces the default (radii in m, conductivities in S/m)."""
     cfg = Config()
+    if head is not None:
+        cfg.head.radii_m, cfg.head.conductivities_S_per_m = list(head[0]), list(head[1])
     cfg.source_mode = source_mode
     cfg.master_seed = seed
     cfg.dataset.n_train = n_samples
@@ -232,13 +243,26 @@ def main() -> int:
     ap.add_argument('--seed', type=int, default=20260703)
     ap.add_argument('--json', default=None,
                     help='write the summary to this path')
+    add_output_options(ap)
     args = ap.parse_args()
+    outputs = ValidationOutputs(
+        ap, args, name='patch-forward',
+        canonical={'json': 'patch_forward_mne_summary.json'},
+        settings={'n_samples': 60, 'seed': 20260703},
+        explicit={'json': args.json} if args.json is not None else None,
+    )
+    with outputs.stage() as paths:
+        _run(args, paths['json'])
+    print(f"\n  summary written to {outputs.paths['json']}")
+    return 0
 
+
+def _run(args, summary_path):
     mne = _require('mne')
     h5py = _require('h5py')
     mne.set_log_level('ERROR')
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(prefix='.patch-data-', dir=summary_path.parent.parent) as tmp:
         patch_dir = Path(tmp) / 'patch'
         point_dir = Path(tmp) / 'point'
 
@@ -274,40 +298,33 @@ def main() -> int:
     print(f'    patch diameter (mm)      : {diameters.min():.1f} to '
           f'{diameters.max():.1f}')
     print(f'    patch / control ratio    : {ratio:.2f}')
-    print('\n  The control residual is the Berg-Scherg approximation floor. '
+    print('\n  The control residual is that of the Berg-Scherg fit of MNE-Python. '
           'The\n  comparison checks whether the patch residual is elevated '
-          'above that\n  floor at the reported summary-statistic level.')
+          'above it\n  at the reported summary-statistic level.')
 
-    if args.json:
-        path = Path(args.json)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            'software_environment': environment_snapshot(),
-            'n_samples': int(args.n_samples),
-            'seed': int(args.seed),
-            'radii_m': list(cfg_patch.head.radii_m),
-            'conductivities_S_per_m': list(cfg_patch.head.conductivities_S_per_m),
-            'n_cortical_positions': int(
-                cfg_patch.sources.n_cortical_positions
-            ),
-            'point_source_control': point_stats,
-            'distributed_patch': patch_stats,
-            'patch_to_control_median_ratio': float(ratio),
-            'active_dipoles_per_patch': {
-                'min': int(active.min()),
-                'median': int(np.median(active)),
-                'max': int(active.max()),
-            },
-            'patch_diameter_mm': {
-                'min': float(diameters.min()),
-                'max': float(diameters.max()),
-            },
-        }
-        with path.open('w', newline='\n') as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-            f.write('\n')
-        print(f'\n  summary written to {path}')
-    return 0
+    payload = {
+        'software_environment': environment_snapshot(),
+        'n_samples': int(args.n_samples),
+        'seed': int(args.seed),
+        'radii_m': list(cfg_patch.head.radii_m),
+        'conductivities_S_per_m': list(cfg_patch.head.conductivities_S_per_m),
+        'n_cortical_positions': int(cfg_patch.sources.n_cortical_positions),
+        'point_source_control': point_stats,
+        'distributed_patch': patch_stats,
+        'patch_to_control_median_ratio': float(ratio),
+        'active_dipoles_per_patch': {
+            'min': int(active.min()),
+            'median': int(np.median(active)),
+            'max': int(active.max()),
+        },
+        'patch_diameter_mm': {
+            'min': float(diameters.min()),
+            'max': float(diameters.max()),
+        },
+    }
+    with summary_path.open('w', newline='\n') as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write('\n')
 
 
 if __name__ == '__main__':

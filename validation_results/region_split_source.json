@@ -1,0 +1,37 @@
+{
+  "dataset_seed": 862,
+  "point": {
+    "region_count": 24,
+    "buffer_mm": 15.0,
+    "rotation_seed": 24000,
+    "positions": {
+      "train": 5941,
+      "val": 632,
+      "test": 1189,
+      "excluded": 1738
+    },
+    "drawn": "cortical positions"
+  },
+  "patch": {
+    "region_count": 8,
+    "buffer_mm": 15.0,
+    "rotation_seed": 24000,
+    "positions": {
+      "train": 7711,
+      "val": 1150,
+      "test": 1425,
+      "excluded": 1381
+    },
+    "largest_diameter_mm": 60.0,
+    "positions_holding_largest_patch": {
+      "train": 5114,
+      "val": 90,
+      "test": 222
+    }
+  },
+  "projection": "Mollweide map of source directions; full-strength colour in panel (b) marks positions that can hold the largest patch",
+  "files": {
+    "region_split.png": "a7e7ea417c638c99a57aea8aec54f5cb6126941ec0b9d745674ea151a603ef8c",
+    "region_split.pdf": "cfe702fa21acf8dca3c2048423955221474e437106d2bf7a5be94e9a98bdb829"
+  }
+}

@@ -25,7 +25,9 @@ that configuration actually produces.
 Usage::
 
     python scripts/measure_split_spacing.py
-    python scripts/measure_split_spacing.py --json validation_results/split_spacing.json
+    python scripts/measure_split_spacing.py --write-canonical
+
+Ordinary runs save the summary in a new validation_runs/ directory.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from scipy.spatial import cKDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts._validation_outputs import ValidationOutputs, add_output_options
 from spherical_eeg_sim.config import Config           # noqa: E402
 from spherical_eeg_sim.provenance import environment_snapshot  # noqa: E402
 from spherical_eeg_sim.sources.sampling import (      # noqa: E402
@@ -47,10 +50,6 @@ from spherical_eeg_sim.sources.sampling import (      # noqa: E402
     sample_cortical_positions,
     sample_subcortical_positions,
 )
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_JSON = REPO_ROOT / 'validation_results' / 'split_spacing.json'
-
 
 def build_pool(cfg: Config):
     """Rebuild a run's position pool and split using the pipeline's seeding."""
@@ -152,9 +151,14 @@ def main(argv=None):
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument('--json', default=str(DEFAULT_JSON),
+    ap.add_argument('--json', default=None,
                     help='path for the deterministic summary')
+    add_output_options(ap)
     args = ap.parse_args(argv)
+    outputs = ValidationOutputs(
+        ap, args, name='split-spacing', canonical={'json': 'split_spacing.json'},
+        explicit={'json': args.json} if args.json is not None else None,
+    )
 
     payload = {
         'software_environment': environment_snapshot(),
@@ -177,12 +181,11 @@ def main(argv=None):
               f"(n = {across['n']})")
         print()
 
-    out = Path(args.json)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open('w', newline='\n') as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write('\n')
-    print(f"wrote {out}")
+    with outputs.stage() as paths:
+        with paths['json'].open('w', newline='\n') as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write('\n')
+    print(f"Wrote {outputs.paths['json']}")
     return payload
 
 
